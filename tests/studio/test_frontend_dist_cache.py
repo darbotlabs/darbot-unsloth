@@ -641,7 +641,7 @@ def test_the_cache_key_has_exactly_one_definition() -> None:
     definers = []
     for path in sorted(list(ACTIONS.rglob("action.yml")) + list(WORKFLOWS.glob("*.yml"))):
         if re.search(r"key:\s*fe-dist-", path.read_text(encoding = "utf-8")):
-            definers.append(str(path.relative_to(REPO)))
+            definers.append(path.relative_to(REPO).as_posix())
     assert definers == [".github/actions/frontend-dist-restore/action.yml"], (
         f"the fe-dist cache key is defined in {definers}. It must have exactly one "
         f"definition: a second copy agrees today and drifts silently, with the cache "

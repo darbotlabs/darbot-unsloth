@@ -141,8 +141,51 @@ def _protected() -> dict[str, dict]:
     return {
         name: document
         for name, document in _documents().items()
-        if name not in QUOTA_BOUND and _runs_on_main_push(document)
+        if name not in QUOTA_BOUND
+        and not _serialized_pages_deployment(name, document)
+        and _runs_on_main_push(document)
     }
+
+
+def _serialized_pages_deployment(name: str, document: dict) -> bool:
+    """Pages must not publish concurrent commits; superseding a pending deploy is intentional."""
+    if name != "deploy-pages.yml":
+        return False
+    deploy = document.get("jobs", {}).get("deploy", {})
+    return (
+        _group(document) == "pages-${{ github.ref }}"
+        and document.get("concurrency", {}).get("cancel-in-progress")
+        == "${{ github.event_name == 'pull_request' }}"
+        and deploy.get("needs") == "build"
+        and deploy.get("if")
+        == "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+        and deploy.get("environment", {}).get("name") == "github-pages"
+        and any(
+            str(step.get("uses", "")).startswith("actions/deploy-pages@")
+            for step in deploy.get("steps", [])
+        )
+    )
+
+
+def test_the_serialized_pages_exception_is_narrow():
+    import copy
+
+    document = _documents()["deploy-pages.yml"]
+    assert _serialized_pages_deployment("deploy-pages.yml", document)
+    assert not _serialized_pages_deployment("studio-backend-ci.yml", document)
+    assert not _is_per_commit_on_main(_group(document))
+    for field, value in (
+        ("needs", "unrelated"),
+        ("if", "always()"),
+        ("environment", {"name": "production"}),
+        ("steps", [{"run": "echo not a Pages deployment"}]),
+    ):
+        changed = copy.deepcopy(document)
+        changed["jobs"]["deploy"][field] = value
+        assert not _serialized_pages_deployment("deploy-pages.yml", changed), field
+    changed = copy.deepcopy(document)
+    changed["concurrency"]["cancel-in-progress"] = True
+    assert not _serialized_pages_deployment("deploy-pages.yml", changed)
 
 
 def test_every_workflow_that_runs_on_main_is_grouped_per_commit():

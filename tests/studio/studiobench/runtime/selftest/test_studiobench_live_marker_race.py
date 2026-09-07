@@ -26,8 +26,8 @@ used `subprocess.Popen` children spinning on a flag file and PASSED against the 
 times out of three, which is worth recording: a concurrency test that does not synchronise finely
 enough is not a weak test, it is a green one that proves nothing.
 
-Processes rather than threads: the liveness check is `os.kill(pid, 0)`, so two threads would be
-judged against this process's own pid and the test would say nothing about two runs.
+Processes rather than threads: the guard checks process liveness, so two threads would be judged
+against this process's own pid and the test would say nothing about two runs.
 """
 
 from __future__ import annotations
@@ -75,22 +75,17 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
             rec.close()
 
 
-def _dead_pid() -> int:
-    with open("/proc/sys/kernel/pid_max", encoding = "utf-8") as fh:
-        return int(fh.read().strip()) - 1
-
-
 def _trial(
     tmp_path: Path,
     n: int,
     trial: int,
-    stale: bool = False,
+    stale_pid: int | None = None,
 ) -> list[tuple[bool, str]]:
     out = tmp_path / f"out{trial}"
     out.mkdir()
-    if stale:
+    if stale_pid is not None:
         # What a crashed run leaves behind: a marker naming a pid that is gone.
-        (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
+        (out / ".running.lock").write_text(f"{stale_pid} crashedsession\n", encoding = "utf-8")
     ctx = mp.get_context("spawn")
     start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
     procs = [
@@ -107,11 +102,11 @@ def _trial(
 def _admissions(
     tmp_path: Path,
     n: int,
-    stale: bool = False,
+    stale_pid: int | None = None,
 ) -> list[int]:
     counts = []
     for trial in range(TRIALS):
-        got = _trial(tmp_path, n, trial, stale = stale)
+        got = _trial(tmp_path, n, trial, stale_pid = stale_pid)
         for ok, why in got:
             if not ok and why.startswith("UNEXPECTED"):
                 pytest.fail(f"a contender failed for the wrong reason: {why}")
@@ -158,7 +153,7 @@ def test_the_directory_is_free_again_once_the_holder_exits(tmp_path):
     rec.close()
 
 
-def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
+def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path, studiobench_dead_pid):
     """The reclaim path was the half the exclusive create did not fix.
 
     A marker naming a dead pid used to be cleared by unlinking it, and two launchers meeting the
@@ -170,23 +165,23 @@ def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
     but a lock the kernel releases when the holder dies -- which leaves nothing to reclaim and no
     reclaim path to race.
     """
-    counts = _admissions(tmp_path, 2, stale = True)
+    counts = _admissions(tmp_path, 2, stale_pid = studiobench_dead_pid)
     assert set(counts) == {1}, (
         f"admitted-per-trial counts were {counts} against a crashed run's marker. Two launchers "
         f"reclaimed the same stale lock and both took the directory."
     )
 
 
-def test_four_launchers_against_a_crashed_run_still_admit_one(tmp_path):
-    counts = _admissions(tmp_path, 4, stale = True)
+def test_four_launchers_against_a_crashed_run_still_admit_one(tmp_path, studiobench_dead_pid):
+    counts = _admissions(tmp_path, 4, stale_pid = studiobench_dead_pid)
     assert set(counts) == {1}, f"admitted-per-trial counts were {counts}"
 
 
-def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
+def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path, studiobench_dead_pid):
     """The other direction: the refusal must not outlive the process that earned it."""
     out = tmp_path / "solo"
     out.mkdir()
-    (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
+    (out / ".running.lock").write_text(f"{studiobench_dead_pid} crashedsession\n", encoding = "utf-8")
     sys.path.insert(0, str(REPO_ROOT))
     from tests.studio.studiobench.runtime.types import Recorder, new_session_id
 
@@ -209,23 +204,39 @@ def _stalled_holder(
     the write is what makes the marker say anything, and writing before the lock would let a LOSER
     publish itself as the holder."""
     code = (
-        "import os,fcntl,time,sys\n"
+        "import os,threading,sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0,{str(REPO_ROOT)!r})\n"
+        "from tests.studio.studiobench.runtime.types import OutDirLock\n"
         "fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o644)\n"
-        "fcntl.flock(fd,fcntl.LOCK_EX)\n"
-        "print('locked',flush=True)\n"
-        "time.sleep(float(sys.argv[2]))\n"
-        "os.ftruncate(fd,0); os.lseek(fd,0,0)\n"
-        "os.write(fd,('%d %s\\n'%(os.getpid(),sys.argv[3])).encode()); os.fsync(fd)\n"
-        "time.sleep(30)\n"
+        "OutDirLock._lock_fd_exclusive(fd)\n"
+        "lock=OutDirLock(Path(sys.argv[1]).parent); lock._fd=fd\n"
+        "stop=threading.Event()\n"
+        "threading.Thread(target=lambda:(sys.stdin.read(1),stop.set()),daemon=True).start()\n"
+        "print('locked '+str(os.getpid()),flush=True)\n"
+        "if not stop.wait(float(sys.argv[2])): lock._write(sys.argv[3])\n"
+        "stop.wait(30)\n"
+        "lock.release()\n"
     )
     proc = subprocess.Popen(
         [sys.executable, "-c", code, str(marker), str(write_after_s), session],
+        stdin = subprocess.PIPE,
         stdout = subprocess.PIPE,
         text = True,
     )
     assert proc.stdout is not None
-    proc.stdout.readline()
-    return proc
+    ready = proc.stdout.readline()
+    if not ready.startswith("locked "):
+        _stop_holder(proc)
+        pytest.fail(f"the owned helper did not acquire its native lock: {ready!r}")
+    # A Windows venv redirector has a different Popen.pid from the actual Python lock holder.
+    return proc, int(ready.split()[1])
+
+
+def _stop_holder(proc):
+    proc.stdin.close()
+    proc.wait(timeout = 10)
+    proc.stdout.close()
 
 
 def _refusal(out: Path) -> str:
@@ -244,14 +255,16 @@ def test_a_clean_close_leaves_no_identity_behind(tmp_path):
     not, because a retained `pid session` line outlives the run that wrote it.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from tests.studio.studiobench.runtime.types import Recorder
+    from tests.studio.studiobench.runtime.types import OutDirLock, Recorder
 
     out = tmp_path / "out0"
     out.mkdir()
     rec = Recorder(out / "payload.jsonl", "sessionAAAA")
     marker = out / ".running.lock"
-    assert "sessionAAAA" in marker.read_text()
-    rec.close()
+    try:
+        assert OutDirLock._read_marker(marker)[0] == "sessionAAAA"
+    finally:
+        rec.close()
     assert marker.exists(), "the marker must not be unlinked"
     assert marker.read_text() == "", marker.read_text()
 
@@ -271,13 +284,13 @@ def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
     dead.wait()
     marker.write_text(f"{dead.pid} sessionGONE\n")
 
-    holder = _stalled_holder(marker, write_after_s = 0.35)
+    holder, owner_pid = _stalled_holder(marker, write_after_s = 0.35)
     try:
         message = _refusal(out)
     finally:
-        holder.kill()
+        _stop_holder(holder)
     assert "sessionGONE" not in message, message
-    assert str(holder.pid) in message, message
+    assert str(owner_pid) in message, message
     assert "realsession is still running" in message, message
 
 
@@ -290,9 +303,9 @@ def test_the_refusal_stays_generic_when_no_live_holder_can_be_named(tmp_path):
     out = tmp_path / "out0"
     out.mkdir()
     marker = out / ".running.lock"
-    holder = _stalled_holder(marker, write_after_s = 60.0)
+    holder, _owner_pid = _stalled_holder(marker, write_after_s = 60.0)
     try:
         message = _refusal(out)
     finally:
-        holder.kill()
+        _stop_holder(holder)
     assert "another run is still holding it" in message, message

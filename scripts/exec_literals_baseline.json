@@ -491,6 +491,461 @@
       "digest": "affd1e4daaf31ae7",
       "count": 1,
       "reason": "Installs the patched trainer method this file generates from a fixed template."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "03e6d133b778a53e",
+      "count": 1,
+      "reason": "Reads a registry attribute enumerated from the already imported modeling module; the module path comes from the validated Transformers model type."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "174a84171de1b969",
+      "count": 1,
+      "reason": "Resolves an EfficientNet block just imported from installed timm source; block names are class identifiers discovered in that library source, not model payload keys."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "41335056252b5222",
+      "count": 10,
+      "reason": "All ten occurrences inspect installed modeling classes/functions for forward, attention, causal-mask, checkpointing, router-logit and callable rewrites. Names originate in that module's source or namespace; the compiler validates the Transformers model type before constructing its module path."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "582a2ff284d76dd9",
+      "count": 1,
+      "reason": "Finds an inner model class referenced by the installed parent class's __init__ source while preparing its gradient-accumulation patch; it does not evaluate serialized model tensor data."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "5a45a5e68b27c8a8",
+      "count": 1,
+      "reason": "Resolves the PEFT parent module already imported by patch_lora_forwards; get_lora_layer_modules discovers its name from the installed PEFT package."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "ae0dc524263f37f6",
+      "count": 4,
+      "reason": "All four occurrences resolve classes in the imported modeling_file for gradient accumulation, class discovery and fullgraph analysis; identifiers are extracted from that installed Python module."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "b38977cf659d599a",
+      "count": 1,
+      "reason": "Resolves a normalization class just imported from timm.layers.norm_act; candidate names come from dir() of that installed module and are filtered for Act classes."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "b4ffe1845a490edc",
+      "count": 1,
+      "reason": "Enumerates the imported Transformers modeling namespace after compilation; model_location is built from the compiler's validated model-type identifier."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "c88f4b2a2dfece41",
+      "count": 1,
+      "reason": "Gets the torch module bound inside the already imported modeling namespace before installing dtype-safe forwards; no dtype string is evaluated at this site."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "d25aca7e28ccdfab",
+      "count": 1,
+      "reason": "The compiler's source-generation helper recovers base classes from its caller-selected, already imported library module. This API deliberately accepts Python source; it is a trusted code-generation boundary, not a model-data parser."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "eval",
+      "digest": "e50edcd7f45039da",
+      "count": 1,
+      "reason": "Looks up a torch.nn class in the imported torch namespace; module is selected from this file's fixed _patch_functions list of normalization and convolution class names."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "002343bd43161592",
+      "count": 1,
+      "reason": "Rebinds entries in registries found inside the installed modeling module to compiled replacements. Registry names/keys come from that trusted Python module, and replacement names come from compiler-discovered classes; arbitrary external mappings are not the input contract."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "07325163fcae29ba",
+      "count": 1,
+      "reason": "Installs a compiled replacement into the original modeling module using a class name obtained from that module's source and a validated model-type module path."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "125ef0dee8697ab8",
+      "count": 1,
+      "reason": "Imports a normalization class selected from dir(timm.layers.norm_act) in the installed timm package so its existing forward can be compiled."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "16b803be263a7d1b",
+      "count": 1,
+      "reason": "Binds a dtype-safe forward through the modeling module's nn alias; the target class comes from the fixed _patch_functions list and forward is an existing callable, not interpolated source data."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "2a08ef7bf87aa806",
+      "count": 1,
+      "reason": "Binds the same dtype-safe callable through combined_module.nn; the only interpolated class name is selected from the fixed _patch_functions list."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "477178a6b990eb09",
+      "count": 1,
+      "reason": "Installs a compiled forward on an EfficientNet block discovered in installed timm source; the expression target is the same imported class that supplied the original function."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "60ec2e1e4c46a9ed",
+      "count": 1,
+      "reason": "Replaces a PEFT LoRA class forward with the compiled callable; parent/child names are discovered by get_lora_layer_modules from the installed PEFT package, not adapter tensor keys."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "65cae25d9d007c86",
+      "count": 1,
+      "reason": "Rebinds the forward on the timm normalization class selected from its installed namespace and already inspected/compiled in this loop."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "6db61d41d15041a9",
+      "count": 1,
+      "reason": "Binds a dtype-safe callable through the imported modeling module's torch.nn namespace; target names are from the fixed _patch_functions list."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "9e394cdc35663c6e",
+      "count": 1,
+      "reason": "Imports a PEFT LoRA parent module discovered from the installed package by get_lora_layer_modules before inspecting and rewriting its library forward."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "aec8dc650544d15a",
+      "count": 1,
+      "reason": "Installs the fixed no_update_causal_mask callable on a compiler-selected installed model class after checking its method and model category; target identifiers originate in the modeling module."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "bf2e8c51f0f6c2ed",
+      "count": 1,
+      "reason": "Executes the installed Trainer._inner_training_loop source after hardcoded debug/device/TPU and function-name rewrites, using names imported from transformers.trainer; training examples are not interpolated into it."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "d6252fea6de677cd",
+      "count": 1,
+      "reason": "Binds the dtype-safe forward in combined_module.torch.nn; the target class is one of this file's fixed convolution/normalization patch names."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "d9650e96220991c3",
+      "count": 1,
+      "reason": "Imports an EfficientNet block identified by a class declaration in the installed timm modeling source, preparing the matching forward patch."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/compiler.py",
+      "sink": "exec",
+      "digest": "ffa18102ffbe15dd",
+      "count": 1,
+      "reason": "Imports only names found in dir(transformers.trainer) and referenced by the inspected Trainer loop, to provide its original library execution namespace."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/fused_losses/forward_install.py",
+      "sink": "compile",
+      "digest": "3fd201db6a1d7d8a",
+      "count": 1,
+      "reason": "Compiles installed eligible model forward source after rewrite_forward_source matches its canonical loss triplet and the head passes the fixed linear-head allowlist; unknown source shapes return without compiling."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/fused_losses/forward_install.py",
+      "sink": "exec",
+      "digest": "f08538fbdca0f314",
+      "count": 1,
+      "reason": "Defines the reviewed canonical-triplet forward rewrite in a namespace copied from the installed original/unwrapped forward, with the fixed fused-loss adapter injected."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/llama_cpp.py",
+      "sink": "eval",
+      "digest": "48fec3bfd1611cf8",
+      "count": 1,
+      "reason": "Introspects argparse defaults in the selected llama.cpp converter Python source: either the explicit local scripts override or the configured upstream download. This trusts executable converter code, as conversion itself does; it is not a safe parser for arbitrary model metadata."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/llama_cpp.py",
+      "sink": "exec",
+      "digest": "3725bba562bb6fff",
+      "count": 1,
+      "reason": "Defines a partial GGUFReader subclass generated from the installed reader's constructor with a fixed tensor-slice rewrite; GGUF payload bytes are read as data and are not inserted into this source."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/llama_cpp.py",
+      "sink": "exec",
+      "digest": "7330700d494b9249",
+      "count": 1,
+      "reason": "Imports names referenced by the inspected installed GGUFReader constructor from gguf.gguf_reader to build the partial-reader verification subclass."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "compile",
+      "digest": "748ca8caa706cbb1",
+      "count": 1,
+      "reason": "Syntax-checks the AST-rewritten installed bitsandbytes integration function after inserting fixed parent mark/unmark calls; this compile step does not execute model data."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "12f4a6d20e7de470",
+      "count": 1,
+      "reason": "Imports names enumerated from installed torch._dynamo.compiled_autograd and referenced by its original end_capture method to support the fixed disable-wrapper patch."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "16d352de024d261d",
+      "count": 1,
+      "reason": "Applies the fixed torch._dynamo configuration assignment list; formatted values are derived Boolean debug/error-control flags and fixed limits."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "70146d03d161750a",
+      "count": 1,
+      "reason": "Imports dependencies enumerated from the installed Transformers bitsandbytes integration and referenced by its inspected replacement function, excluding the function being replaced."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "7a5e305efb369e7f",
+      "count": 3,
+      "reason": "The three reviewed occurrences install inspected library-source rewrites: Torch end_capture, Torch AutogradEngineVariable.call_method, and Transformers bitsandbytes conversion. Each transformation adds fixed compatibility/parent-tracking code rather than interpolating model payloads."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "8ef4f95125d70a09",
+      "count": 1,
+      "reason": "Applies this file's fixed Torch compiler configuration assignments; substitutions are Boolean optimization/debug flags or one of two literal optimization levels, not externally supplied Python expressions."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/patching_utils.py",
+      "sink": "exec",
+      "digest": "d5c91cdf1f94e789",
+      "count": 1,
+      "reason": "Imports dependencies referenced by the inspected installed torch._dynamo.variables.misc method before applying its fixed compiled-autograd-region replacement."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "eval",
+      "digest": "43aec61ea49223f1",
+      "count": 1,
+      "reason": "Resolves a Linear class name enumerated from and just imported out of the installed PEFT tuner module, building the accepted LoRA layer class tuple."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "eval",
+      "digest": "73be47696e5e4b6b",
+      "count": 1,
+      "reason": "Reads the model hook collection selected by register_other_hooks' fixed internal _forward_hooks or _forward_pre_hooks arguments; every caller supplies one of those literals."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "eval",
+      "digest": "81cdac2f6f8a2c32",
+      "count": 1,
+      "reason": "Resolves the PEFT module just imported from package-discovered Python filenames; the trust boundary is installed PEFT code, not a user-supplied adapter-name expression."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "exec",
+      "digest": "45bbd24d7d803e73",
+      "count": 1,
+      "reason": "Imports a tuner module discovered from the installed PEFT package's Python files so its exported Linear classes can be inspected."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "exec",
+      "digest": "582f1edab6ecc7d8",
+      "count": 1,
+      "reason": "Clears the model's existing hook collection using an internal literal _forward_hooks or _forward_pre_hooks selector, before registering retained hook objects."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "exec",
+      "digest": "9c8c2a17a2a67b45",
+      "count": 1,
+      "reason": "Re-registers an existing callable through register_forward_hook or register_forward_pre_hook, derived from the two fixed internal hook selectors; hook contents are passed as objects rather than source."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/peft_utils.py",
+      "sink": "exec",
+      "digest": "d467bcd0b437db95",
+      "count": 1,
+      "reason": "Imports Linear names obtained from dir() of an already imported installed PEFT module; both the module and exported names belong to that trusted package."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/rl_environments.py",
+      "sink": "compile",
+      "digest": "b31c3643c722ff5c",
+      "count": 1,
+      "reason": "Intentional function-source API: validate_single_function_source checks a single function AST before compilation and postpones annotations. The generated-function wrapper defaults to restricted builtins; explicit full mode remains trusted developer-code execution, not an untrusted-code sandbox."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/rl_environments.py",
+      "sink": "exec",
+      "digest": "75d2bbcd268e2ee9",
+      "count": 1,
+      "reason": "Defines the AST-validated function in the namespace chosen by builtins_policy. Allowlist mode restricts imports/builtins and private-attribute access; full mode deliberately allows developer code. These Python-level controls are not asserted to provide OS/process isolation."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/saving_utils.py",
+      "sink": "exec",
+      "digest": "691766359b82b093",
+      "count": 1,
+      "reason": "Imports names enumerated from the installed transformers.modeling_utils namespace to support the separately generated save method; this import statement contains no repository, revision or model-tensor input."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/saving_utils.py",
+      "sink": "exec",
+      "digest": "b9fff86a8c82eb0d",
+      "count": 1,
+      "reason": "Executes a rewrite of the installed Transformers save method. Hub repository/revision values are repr-serialized after template whitespace normalization; test_zoo_save_revision_literals.py verifies exact literal and uploader value preservation without network access. Other inserted settings derive from the selected dtype and computed shard sizes."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/gemma4.py",
+      "sink": "compile",
+      "digest": "db03349e3b7fe7de",
+      "count": 1,
+      "reason": "Compiles the installed Gemma4 forward AST after matching exactly one buggy audio cast and adding inputs_embeds.dtype; unexpected source shapes are rejected and original decorators are not re-executed."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/gemma4.py",
+      "sink": "exec",
+      "digest": "0ba7fb7724952f06",
+      "count": 1,
+      "reason": "Defines that narrowly matched Gemma4 audio-cast rewrite in the installed module namespace, then transplants only its code object after verifying closure compatibility."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/gemma4_float32.py",
+      "sink": "compile",
+      "digest": "8fa7a86eee03b0c6",
+      "count": 1,
+      "reason": "Compiles the installed Gemma4 method AST after the fixed PLE linear-call targets and expected source shape match; the AST transformer inserts only the local dtype-cast helper."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/gemma4_float32.py",
+      "sink": "exec",
+      "digest": "785478c6b0e3cc40",
+      "count": 1,
+      "reason": "Defines the checked PLE dtype rewrite with its local cast helper in the installed module namespace; decorators are removed and code replacement requires equal closure variables."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/misc.py",
+      "sink": "exec",
+      "digest": "13fce184fe981cb2",
+      "count": 1,
+      "reason": "Imports names enumerated from transformers.quantizers.auto and referenced by its inspected merge_quantization_configs method, supplying the original library namespace for a fixed None-check patch."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/temporary_patches/misc.py",
+      "sink": "exec",
+      "digest": "7a5e305efb369e7f",
+      "count": 1,
+      "reason": "Installs inspected AutoHfQuantizer.merge_quantization_configs source after adding a fixed None guard and adapting its classmethod signature; quantization configuration values are runtime arguments, not generated source."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "eval",
+      "digest": "6e5ae3bd4483e267",
+      "count": 1,
+      "reason": "Gets the parent for a parameter/buffer path selected from create_empty_model's fixed layer templates, converting numeric layer components to indices; weights remain separate objects."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "eval",
+      "digest": "e1c0e6e5e72d3992",
+      "count": 1,
+      "reason": "Resolves the cross-attention module using the internally selected text-model prefix, a range-generated layer index and the fixed cross_attn.qkv_proj suffix."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "eval",
+      "digest": "e7491ae388bc00d4",
+      "count": 1,
+      "reason": "Resolves a layernorm path assembled from get_model_layer_config's fixed templates and the integer layer index; it is not a path read from arbitrary state-dict keys."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "07970955945be5d2",
+      "count": 1,
+      "reason": "Installs the separately constructed bias object on the template-selected layernorm path; the source contains only the fixed attribute path and local object name."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "158d0cb952b9ad6c",
+      "count": 2,
+      "reason": "Both LoRA cast/restore occurrences interpolate the dtype resolved by _get_dtype from the fixed dtype map or imported torch attributes, not the caller's original string; selected modules are existing model objects."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "3100e23cb9cda992",
+      "count": 1,
+      "reason": "Attaches the separately constructed layernorm weight_param object at a fixed template/index-derived model path; tensor contents never become source."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "9ba49a34b5d3f94d",
+      "count": 1,
+      "reason": "Attaches a reconstructed parameter using a path from the fixed layer templates and range-generated index; the tensor/Parameter is passed through the local layer object."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "a32b902c145cbbb3",
+      "count": 1,
+      "reason": "Clears a layernorm weight before replacement; the target path is a fixed create_empty_model layer template with an integer index, not a supplied checkpoint key expression."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "da7d2cbca432c8bf",
+      "count": 1,
+      "reason": "Attaches a reconstructed linear/quantized layer through a fixed template path with numeric indices; quant_state_dict is queried using that path rather than used to generate arbitrary targets."
+    },
+    {
+      "file": "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/vllm_utils.py",
+      "sink": "exec",
+      "digest": "e1ac0cbebe50a698",
+      "count": 1,
+      "reason": "Clears a layernorm bias at a target selected from the fixed layer templates before replacing it with the existing bias object."
     }
   ]
 }

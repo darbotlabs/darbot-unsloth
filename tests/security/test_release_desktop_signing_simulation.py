@@ -396,10 +396,27 @@ def test_verify_fails_when_the_binary_exits_non_zero(sandbox):
 
 @needs_pathext
 def test_verify_accepts_the_binary_it_installed(sandbox):
-    # The running interpreter answers --version and exits 0, which is all the
-    # verify step asks of the tool.
+    # A venv's python.exe is a location-dependent redirector, not a relocatable fixture.
+    # Build a tiny .NET Framework executable with the Windows PowerShell compiler.
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
-    verified = _real_exe_on_path(directory, sys.executable)
+    directory.mkdir(parents = True)
+    verified = directory / "trusted-signing-cli.exe"
+    code = (
+        "public static class FixtureTool { public static int Main(string[] args) { "
+        'System.Console.WriteLine("signing verification fixture"); return 0; } }'
+    )
+    compiler = shutil.which("powershell")
+    assert compiler, "Windows PowerShell is required to compile the runnable Windows fixture"
+    command = (
+        "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition '"
+        + code + "' -OutputType ConsoleApplication -OutputAssembly '"
+        + str(verified).replace("'", "''") + "'"
+    )
+    built = run_pwsh(
+        [compiler, "-NoProfile", "-Command", command],
+        capture_output = True, text = True, timeout = 60,
+    )
+    assert built.returncode == 0 and verified.is_file(), built.stdout + built.stderr
 
     code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
 

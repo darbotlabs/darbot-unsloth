@@ -3860,19 +3860,19 @@ _PUSHING_CODE = \
 PushToHubMixin._upload_modified_files(
     PushToHubMixin,
     working_dir = save_directory,
-    repo_id = '{repo_id}',
+    repo_id = {repo_id!r},
     files_timestamps = files_timestamps,
     commit_message = "Upload Unsloth finetuned model",
     token = token,
     create_pr = False,
-    revision = {revision},
+    revision = {revision!r},
     commit_description = "Upload Unsloth finetuned model",
 )
-if {use_temp_file} and temp_file is not None: temp_file.cleanup()
+if {use_temp_file!r} and temp_file is not None: temp_file.cleanup()
 else:
     shutil.rmtree(save_directory)
     os.makedirs(save_directory, exist_ok = True)
-if {use_temp_file}:
+if {use_temp_file!r}:
     temp_file = tempfile.TemporaryDirectory(ignore_cleanup_errors = True)
     save_directory = temp_file.name
 files_timestamps = PushToHubMixin._get_files_timestamps(PushToHubMixin, save_directory)
@@ -3918,13 +3918,11 @@ def incremental_save_pretrained(
         new_for_loop = for_loop[:first_newline] + \
             for_loop[first_newline:] + \
             " "*spaces + \
-            re.sub(r"[ ]{8,}", "",
-                   _PUSHING_CODE.format(
-                       repo_id = repo_id,
-                       revision = revision,
-                       use_temp_file = use_temp_file,
-                    ).rstrip()
-            ).replace("\n", "\n" + " "*spaces)
+            re.sub(r"[ ]{8,}", "", _PUSHING_CODE).format(
+                repo_id = repo_id,
+                revision = revision,
+                use_temp_file = use_temp_file,
+            ).rstrip().replace("\n", "\n" + " "*spaces)
     else:
         new_for_loop = for_loop
     pass
@@ -3940,13 +3938,13 @@ def incremental_save_pretrained(
         new_for_loop = new_for_loop + \
             "\n" + \
             " "*(spaces-4) + \
-            f"if {use_temp_file}:\n" + \
+            f"if {use_temp_file!r}:\n" + \
             " "*(spaces) + \
             "temp_file = tempfile.TemporaryDirectory(ignore_cleanup_errors = True)\n" + \
             " "*(spaces) + \
             "save_directory = temp_file.name\n" + \
             " "*(spaces) + \
-            f"repo_id = '{repo_id}'\n"
+            f"repo_id = {repo_id!r}\n"
     pass
     save_pretrained = save_pretrained.replace(for_loop, new_for_loop)
 

@@ -48,6 +48,12 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_manifest.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
+    "studio/install_zoo.py",
+    "studio/python_policy.py",
+    "studio/__init__.py",
+    "unsloth/__init__.py",
+    "unsloth/_version.py",
+    "unsloth_cli/__init__.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     # install_python_stack runs this one with sys.executable.

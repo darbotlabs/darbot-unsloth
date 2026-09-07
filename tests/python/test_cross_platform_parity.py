@@ -68,8 +68,9 @@ class TestNoTorchBackendAutoInInstallSh:
         body = "\n".join(lines[block.start : block.stop])
         # Both arms of the branch, so neither an early stop nor a runaway passes.
         assert "STUDIO_LOCAL_INSTALL" in body, "the fallback block stops before its own first if"
-        assert body.count("--torch-backend=auto") == 2, (
-            "the fallback runs --torch-backend=auto once per arm; the detected block "
+        assert "_install_fork_source" in body, "local source must retain its paired dependency solve"
+        assert body.count("--torch-backend=auto") == 1, (
+            "only the nonlocal compatibility arm uses --torch-backend=auto; the detected block "
             f"contains {body.count('--torch-backend=auto')}"
         )
         # And it must not have swallowed the rest of the file.
@@ -99,13 +100,8 @@ class TestInstallShHasGpuDetection:
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
-class TestPreTuringCapParity:
-    """Every wheel-selection site caps cu128/cu130 on a pre-Turing host (issue #7765).
-
-    PyTorch 2.11 builds those families for sm_75 and newer, so a Maxwell/Pascal/Volta
-    box needs cu126 -- both for torch itself and for the CUDA 12 runtime that gets it
-    a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
-    """
+class TestCanonicalCudaProfileParity:
+    """Current Torch selection must not invoke historical cu126 architecture fallback."""
 
     # (file, call spelling, selection function that must invoke it, its end marker). The
     # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
@@ -134,11 +130,14 @@ class TestPreTuringCapParity:
             assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
 
     @pytest.mark.parametrize("path,call,start,end", _SITES)
-    def test_selection_function_applies_the_cap(self, path, call, start, end):
+    def test_selection_function_does_not_alias_the_cuda_profile(self, path, call, start, end):
         text = path.read_text(encoding = "utf-8")
         assert start in text, f"{path.name} no longer defines {start!r}"
         body = text.split(start, 1)[1].split(end, 1)[0]
-        assert call in body, f"{path.name}'s selection function never applies {call!r}"
+        code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+        assert call not in code, f"{path.name} silently falls back to a different CUDA family"
+        assert "cu130" in code
+        assert "CUDA 13" in code and "driver" in code
 
 
 # A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
@@ -147,11 +146,11 @@ _CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
 
 
 class TestCudaMappingParity:
-    """CUDA version thresholds must match between install.sh and install.ps1."""
+    """The current CUDA profile must agree without an old multi-family ladder."""
 
     @staticmethod
     def _extract_cuda_thresholds_sh(text: str) -> list[str]:
-        """Extract cu* suffixes from the major/minor comparison chain in install.sh."""
+        """Extract literal CUDA families from the selection function's code."""
         # Only match lines in the if/elif chain that compare _major/_minor
         in_func = False
         results = []
@@ -161,11 +160,9 @@ class TestCudaMappingParity:
                 continue
             if in_func and line.startswith("}"):
                 break
-            if in_func and ("_major" in line or "_minor" in line):
-                m = re.search(_CUDA_LEAF_RE, line)
-                if m:
-                    results.append(m.group(1))
-        return results
+            if in_func and not line.lstrip().startswith("#"):
+                results.extend(re.findall(r"\bcu\d+\b", line))
+        return sorted(set(results))
 
     @staticmethod
     def _extract_cuda_thresholds_ps1(text: str) -> list[str]:
@@ -182,12 +179,9 @@ class TestCudaMappingParity:
                 depth += line.count("{") - line.count("}")
                 if depth <= 0:
                     break
-                # Only match the if-chain lines that compare $major/$minor
-                if "$major" in line or "$minor" in line:
-                    m = re.search(_CUDA_LEAF_RE, line)
-                    if m:
-                        results.append(m.group(1))
-        return results
+                if not line.lstrip().startswith("#"):
+                    results.extend(re.findall(r"\bcu\d+\b", line))
+        return sorted(set(results))
 
     def test_same_cuda_suffixes(self):
         """Both scripts should produce the same ordered list of CUDA index suffixes."""
@@ -197,8 +191,8 @@ class TestCudaMappingParity:
         sh_thresholds = self._extract_cuda_thresholds_sh(sh_text)
         ps1_thresholds = self._extract_cuda_thresholds_ps1(ps1_text)
 
-        assert len(sh_thresholds) > 0, "Could not extract thresholds from install.sh"
-        assert len(ps1_thresholds) > 0, "Could not extract thresholds from install.ps1"
+        assert sh_thresholds == ["cu130"], "install.sh must select only the maintained CUDA family"
+        assert ps1_thresholds == ["cu130"], "install.ps1 must select only the maintained CUDA family"
         assert sh_thresholds == ps1_thresholds, (
             f"CUDA mapping mismatch:\n"
             f"  install.sh:  {sh_thresholds}\n"
@@ -515,21 +509,17 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound the whole trio on EVERY
-        index with the default torch 2.11 line (<2.12 trio, matching install.sh's
-        ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
-        dropped its exact torch pin from the wheel metadata, so a bare companion
-        beside a capped torch can resolve a mismatched build."""
+        """Every index must receive the exact maintained trio, not floating companions."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
-            '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
-        ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
+            '$_pinTorchSpec = "torch==2.14.0"' in text
+        ), "install.ps1 must pin Torch2.14.0"
         assert (
-            '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
-        ), "install.ps1 must pair torchvision <0.27.0 with torch <2.12"
+            '$_pinVisionSpec = "torchvision==0.29.0"' in text
+        ), "install.ps1 must pin Vision0.29.0"
         assert (
-            '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
-        ), "install.ps1 must pair torchaudio <2.12.0 with torch <2.12"
+            '$_pinAudioSpec = "torchaudio==2.11.0"' in text
+        ), "Audio2.11.0 is the maintained release; do not invent Audio2.14"
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
@@ -839,9 +829,9 @@ class TestPinnedIndexClearsUvEnvParity:
         # The custom-leaf branch bounds torch AND both companions (parity with the
         # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
-            '$cudaTorchSpec = "torch>=2.4,<2.12.0"',
-            '$cudaVisionSpec = "torchvision>=0.19,<0.27.0"',
-            '$cudaAudioSpec = "torchaudio>=2.4,<2.12.0"',
+            '$cudaTorchSpec = "torch==2.14.0"',
+            '$cudaVisionSpec = "torchvision==0.29.0"',
+            '$cudaAudioSpec = "torchaudio==2.11.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
         assert (
@@ -859,12 +849,12 @@ class TestPinnedIndexClearsUvEnvParity:
         """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with
         _CPU_TORCH_PKG_SPEC): the /cpu index serves newer torch, and _ensure_cpu_torch
         keeps any CPU build, so a bare pinned trio could land an unsupported version.
-        An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
+        Unpinned CPU installs use the same maintained trio."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         for spec in (
-            '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
-            '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
-            '$cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"',
+            '$cpuTorchSpec  = "torch==2.14.0"',
+            '$cpuVisionSpec = "torchvision==0.29.0"',
+            '$cpuAudioSpec  = "torchaudio==2.11.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the pinned CPU trio: {spec}"
         assert (
@@ -879,10 +869,10 @@ class TestPinnedIndexClearsUvEnvParity:
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
-        assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
-            "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
-            "ceiling the setup.ps1 pinned CPU branch mirrors"
-        )
+        assert spec_block
+        for spec in ("torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0"):
+            assert f'"{spec}"' in spec_block.group(1)
+        assert "_CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC" in stack
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The stale-venv check must use the same EXACT rocm/gfx gate as the install
@@ -1025,16 +1015,10 @@ class TestAmdBnbFloorParity:
     FLOOR = "0.50.0"
     PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-    def test_amd_extra_floor(self):
+    def test_no_unqualified_amd_extra_is_advertised(self):
         text = self.PYPROJECT.read_text(encoding = "utf-8")
         amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
-        assert amd, "pyproject.toml must define an `amd` extra"
-        specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
-        assert specs, "the amd extra must pin bitsandbytes"
-        for spec in specs:
-            assert spec.startswith(
-                f"bitsandbytes>={self.FLOOR}"
-            ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
+        assert amd is None, "Do not advertise an unqualified generic AMD extra"
 
     def test_install_sh_pypi_fallback_floor(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")

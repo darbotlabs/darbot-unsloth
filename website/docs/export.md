@@ -24,6 +24,15 @@ The HTTP registration uses `/api/export`; operation paths include `/load-checkpo
 
 Do not overwrite your only trained checkpoint. Keep sufficient disk headroom for intermediate files and validate the result with its target inference runtime before publishing it.
 
+## Incremental Hub uploads
+
+The maintained Zoo companion preserves repository IDs and revisions as literal
+values when generating incremental-save code. A revision such as `main`,
+`refs/heads/topic`, or a commit SHA is passed to the Hub uploader as a string,
+not interpreted as a Python expression. Quoting and whitespace are preserved;
+the Hub still validates whether those values name an acceptable repository or
+revision.
+
 ## Current compressed-export block
 
 Stable **LLMCompressor 0.13.0** and **compressed-tensors 0.18** do not satisfy this fork's Torch 2.14 stack. Their relevant published ceilings include:

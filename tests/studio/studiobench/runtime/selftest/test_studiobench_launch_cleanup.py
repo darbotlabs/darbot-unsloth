@@ -79,8 +79,10 @@ def launched(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(cmd, 0, stdout = out, stderr = "")
 
     monkeypatch.setattr(lifecycle, "_run", fake_run)
-    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: state["signalled"].append((pgid, sig)))
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising = False)
+    monkeypatch.setattr(
+        os, "killpg", lambda pgid, sig: state["signalled"].append((pgid, sig)), raising = False
+    )
 
     state["install"] = StudioInstall(home = tmp_path / "home", repo = tmp_path / "repo", branch = "main")
     state["log"] = tmp_path / "studio.log"

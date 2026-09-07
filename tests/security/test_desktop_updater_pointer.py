@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import yaml
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -212,6 +213,8 @@ def _run_step(
     state_path,
     repair_pointer = "true",
 ):
+    if os.name != "posix":
+        pytest.skip("POSIX bash/shebang mock-gh fixture requires native POSIX paths")
     tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok = True)

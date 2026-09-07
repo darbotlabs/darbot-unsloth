@@ -831,10 +831,17 @@ def render(
 
 def shards_of(pattern: str) -> list[Path]:
     """`outputs/sbench_mine*` to every shard's payload, in a stable order."""
-    root = Path(pattern).parent if "/" in pattern else Path(".")
-    stem = Path(pattern).name
-    found = sorted(p / "payload.jsonl" for p in root.glob(stem) if (p / "payload.jsonl").exists())
-    return found or ([Path(pattern)] if Path(pattern).exists() else [])
+    candidate = Path(pattern)
+    if candidate.is_file():
+        return [candidate]
+    if candidate.is_dir():
+        payload = candidate / "payload.jsonl"
+        return [payload] if payload.is_file() else []
+    return sorted(
+        p / "payload.jsonl"
+        for p in candidate.parent.glob(candidate.name)
+        if (p / "payload.jsonl").is_file()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

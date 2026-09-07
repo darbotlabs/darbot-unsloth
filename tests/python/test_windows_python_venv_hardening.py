@@ -79,6 +79,7 @@ def _uv_cache_functions(source: str) -> str:
 def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
+    supported = _extract(r"    function Test-SupportedPython \{.*?\n    \}\n", source)
     (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
     if os.name == "nt":
         wrapper = tmp_path / "python.bat"
@@ -92,25 +93,39 @@ def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: 
 
     script = f"""
 $ErrorActionPreference = "Stop"
-$PythonVersion = "3.13"
+$PythonVersion = "3.14"
+$RequestedPythonVersion = "3.14.7"
+$PythonSkip = @()
+$script:WrapperEnumerated = $false
 $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda)'
 function Get-HostMachineArch {{ return "x86_64" }}
 function Test-IsCondaPython {{ param([string]$Exe) return $false }}
 function Get-PythonPlatformTag {{ param([string]$Exe) return "win-amd64" }}
+function Test-Path {{
+    [CmdletBinding()]
+    param([string]$LiteralPath, [string]$PathType)
+    # Only the wrapper's resolved interpreter is part of this fixture, never a host install.
+    return $script:WrapperEnumerated -and $LiteralPath -eq $env:TEST_RESOLVED_PYTHON
+}}
 function Get-Command {{
     param([Parameter(Position = 0)][string]$Name,
           [Parameter(ValueFromRemainingArguments = $true)]$Rest)
     if ($Name -eq "python") {{
+        $script:WrapperEnumerated = $true
         return @([pscustomobject]@{{ Source = $env:TEST_PYTHON_WRAPPER }})
     }}
     return @()
 }}
+{supported}
 {finder}
 $found = Find-CompatiblePython
+if (-not $script:WrapperEnumerated) {{ throw "the PATH wrapper branch was not exercised" }}
 Write-Output $found.Path
 """
     env = os.environ.copy()
     env["TEST_PYTHON_WRAPPER"] = str(wrapper)
+    env["TEST_RESOLVED_PYTHON"] = sys.executable
+    env.pop("UNSLOTH_PYTHON_EXE", None)
     env["PYTHONPATH"] = str(tmp_path)
     assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
 

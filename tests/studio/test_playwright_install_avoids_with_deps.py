@@ -55,7 +55,7 @@ _WITH_DEPS = re.compile(r"playwright\s+install\b[^\n]*--with-deps")
 
 def _run_steps(path: Path):
     """(job name, step name, run body) for every step that runs a shell body."""
-    doc = yaml.safe_load(path.read_text()) or {}
+    doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
     for job_name, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue

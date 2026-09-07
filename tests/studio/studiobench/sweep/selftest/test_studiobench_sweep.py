@@ -25,6 +25,36 @@ from tests.studio.studiobench.sweep import ui_parity as U  # noqa: E402
 # ── building a payload ───────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("reader", [F.shards_of, U.shards_of], ids = ["performance", "parity"])
+def test_payload_discovery_preserves_native_paths_and_literal_directory_names(tmp_path, monkeypatch, relative, reader):
+    directory = tmp_path / "résult [one]"
+    directory.mkdir()
+    data = directory / "payload.jsonl"
+    data.write_text("{}\n", encoding = "utf-8")
+    monkeypatch.chdir(tmp_path)
+    candidate = Path(directory.name) if relative else directory
+    assert reader(str(candidate)) == [candidate / "payload.jsonl"]
+    # Performance accepts an explicit payload file; parity's input contract is output directories.
+    expected_file = [candidate / "payload.jsonl"] if reader is F.shards_of else []
+    assert reader(str(candidate / "payload.jsonl")) == expected_file
+
+
+@pytest.mark.parametrize("reader", [F.shards_of, U.shards_of], ids = ["performance", "parity"])
+def test_payload_directory_globs_are_stable_and_do_not_return_empty_directories(tmp_path, reader):
+    for name in ("run-b", "run-a", "run-empty"):
+        directory = tmp_path / name
+        directory.mkdir()
+        if name != "run-empty":
+            (directory / "payload.jsonl").write_text("{}\n", encoding = "utf-8")
+    assert reader(str(tmp_path / "run-*")) == [
+        tmp_path / "run-a" / "payload.jsonl",
+        tmp_path / "run-b" / "payload.jsonl",
+    ]
+    assert reader(str(tmp_path / "run-empty")) == []
+    assert reader(str(tmp_path / "missing*")) == []
+
+
 def cell(rung: str, arm: str, rep: str, timings: dict[str, float]) -> list[dict]:
     cid = f"{rung}.{arm}.{rep}"
     return [

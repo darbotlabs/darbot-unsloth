@@ -228,3 +228,39 @@ def test_every_baseline_entry_carries_a_reason():
         e["file"] for e in document["entries"] if not e.get("reason") or e["reason"] == "REVIEW ME"
     ]
     assert not bare, bare
+
+
+@pytest.mark.parametrize("call", ["exec(payload)", "eval(payload)", 'compile(payload, "<x>", "exec")'])
+def test_vendored_companion_is_scanned_without_a_blanket_exception(tmp_path, monkeypatch, call):
+    module = _module()
+    relative = "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/new.py"
+    sample = tmp_path / relative
+    sample.parent.mkdir(parents = True)
+    sample.write_text(f"def f(payload):\n    {call}\n", encoding = "utf-8")
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+
+    findings = module.collect(["studio"])
+    assert len(findings) == 1
+    assert findings[0]["file"] == relative
+    assert findings[0]["sink"] == call.split("(", 1)[0]
+
+
+def test_a_second_identical_vendor_call_requires_separate_review(tmp_path, monkeypatch):
+    module = _module()
+    relative = "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/reviewed.py"
+    sample = tmp_path / relative
+    sample.parent.mkdir(parents = True)
+    source = "def f(payload):\n    exec(payload)\n"
+    sample.write_text(source, encoding = "utf-8")
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    finding = module.collect(["studio"])[0]
+    entry = {key: finding[key] for key in ("file", "sink", "digest")}
+    entry.update(count = 1, reason = "Fixture-only reviewed code-extension boundary.")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"targets": ["studio"], "entries": [entry]}), encoding = "utf-8")
+    monkeypatch.setattr(module, "BASELINE_PATH", baseline)
+    monkeypatch.setattr(sys, "argv", ["lint_exec_literals.py"])
+    assert module.main() == 0
+
+    sample.write_text(source + source.replace("def f(", "def g("), encoding = "utf-8")
+    assert module.main() == 1

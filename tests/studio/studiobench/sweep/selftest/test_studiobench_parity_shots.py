@@ -576,7 +576,7 @@ def test_every_import_of_a_measured_route_is_gated_or_explicitly_waived():
             target = backend / (mod.replace(".", "/") + ".py")
             if not target.exists():
                 continue
-            path = f"studio/backend/{target.relative_to(backend)}"
+            path = f"studio/backend/{target.relative_to(backend).as_posix()}"
             if path in workflow or path in NOT_GATED:
                 continue
             missing.append((rel, path))

@@ -25,6 +25,7 @@
     "TRL 1.x removal of ConstantLengthDataset in favor of maintained pack_dataset.",
     "Torch 2.14 public override helpers instead of private functional re-exports.",
     "Respect explicit Dynamo disable before entering Torch 2.14 fullgraph wrappers.",
-    "Route every vendored SFT map and packing operation through the datasets 5 serial-worker policy."
+    "Route every vendored SFT map and packing operation through the datasets 5 serial-worker policy.",
+    "Preserve Hub repository and revision values as Python literals in generated incremental-save code; normalize template whitespace before inserting values."
   ]
 }

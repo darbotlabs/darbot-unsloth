@@ -61,7 +61,7 @@ $venvDirFn
 Get-ProbableStudioVenvDir
 "@)
     $saved = @{}
-    foreach ($k in 'UNSLOTH_STUDIO_HOME', 'STUDIO_HOME', 'USERPROFILE') {
+    foreach ($k in 'UNSLOTH_ENV_DIR', 'UNSLOTH_STUDIO_HOME', 'STUDIO_HOME', 'USERPROFILE') {
         $saved[$k] = [Environment]::GetEnvironmentVariable($k)
         if ($Env.ContainsKey($k)) { Set-Item "Env:$k" $Env[$k] } else { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     }
@@ -79,6 +79,7 @@ Check "default location"        ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me" 
 Check "UNSLOTH_STUDIO_HOME"     ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; UNSLOTH_STUDIO_HOME = "D:\alt" } @("D:\alt\unsloth_studio")) -eq "D:\alt\unsloth_studio")
 Check "STUDIO_HOME alias"       ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; STUDIO_HOME = "D:\alt" } @("D:\alt\unsloth_studio")) -eq "D:\alt\unsloth_studio")
 Check "UNSLOTH_STUDIO_HOME wins" ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; UNSLOTH_STUDIO_HOME = "D:\a"; STUDIO_HOME = "D:\b" } @("D:\a\unsloth_studio")) -eq "D:\a\unsloth_studio")
+Check "explicit environment is separate from data home" ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; UNSLOTH_ENV_DIR = "D:\custom-env"; UNSLOTH_STUDIO_HOME = "D:\data" } @("D:\custom-env")) -eq "D:\custom-env")
 # A literal ~ would leave a cwd-relative path and probe the wrong tree.
 Check "tilde expands"           ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; UNSLOTH_STUDIO_HOME = "~/s" } @("C:\Users\me\s\unsloth_studio")) -eq "C:\Users\me\s\unsloth_studio")
 Check "bare tilde expands"      ((Invoke-VenvDir @{ USERPROFILE = "C:\Users\me"; UNSLOTH_STUDIO_HOME = "~" } @("C:\Users\me\unsloth_studio")) -eq "C:\Users\me\unsloth_studio")
@@ -137,7 +138,7 @@ Check "no venv path"            (-not (Invoke-IsXpu "" $XPU))
 # The fast path asks this one, and it must answer about the WHEEL only: no dependency pass
 # repairs a driver, so keying the escape on readiness re-resolved everything every update.
 $isXpuSupFn = Get-FunctionText $setup "Test-VenvTorchIsXpuSupported"
-Check "extraction kept the range" ($isXpuSupFn -match '11')
+Check "extraction kept the maintained minor" ($isXpuSupFn -match '\$Matches\[2\] -eq 14')
 function Invoke-IsXpuSupported {
     param([string] $VenvPath, [string] $VersionPyBody, [switch] $Missing, [switch] $Throws)
     $sb = [scriptblock]::Create(@"
@@ -163,19 +164,19 @@ Test-VenvTorchIsXpuSupported -VenvPath '$VenvPath'
 }
 
 Write-Host "flavour AND range, both off disk"
-Check "2.9.1+xpu supported"  (Invoke-IsXpuSupported "C:\v" $XPU)
-Check "2.6.0+xpu is the floor" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.6.0+xpu'")
-Check "2.10.0+xpu supported" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.10.0+xpu'")
-# unsloth/models/_utils.py raises at import for an XPU device below 2.6, and 2.11 is the trio's
-# ceiling -- both repairable by the dependency pass.
+Check "2.9.1+xpu needs migration"  (-not (Invoke-IsXpuSupported "C:\v" $XPU))
+Check "2.6.0+xpu needs migration" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.6.0+xpu'"))
+Check "2.10.0+xpu needs migration" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.10.0+xpu'"))
+Check "2.14.0+xpu is maintained" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.14.0+xpu'")
+Check "2.15.0+xpu is not the maintained minor" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.15.0+xpu'"))
 Check "2.5.1+xpu below floor" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.5.1+xpu'"))
-Check "2.11.0+xpu at ceiling" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.11.0+xpu'"))
+Check "2.11.0+xpu needs migration" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.11.0+xpu'"))
 Check "3.0.0+xpu above range" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '3.0.0+xpu'"))
 Check "cuda wheel"           (-not (Invoke-IsXpuSupported "C:\v" $CU))
 Check "untagged wheel"       (-not (Invoke-IsXpuSupported "C:\v" $BARE))
 Check "xpu attr but cuda wheel" (-not (Invoke-IsXpuSupported "C:\v" ($CU + "`nxpu: Optional[str] = None")))
 # A nightly is judged on its release base, as setup.sh does; an unparseable label is not judged.
-Check "dev label reads its base" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.9.0.dev20260101+xpu'")
+Check "old dev label needs migration" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.9.0.dev20260101+xpu'"))
 Check "junk label"           (-not (Invoke-IsXpuSupported "C:\v" "__version__ = 'unknown'"))
 Check "no version line"      (-not (Invoke-IsXpuSupported "C:\v" "debug = False"))
 Check "no torch installed"   (-not (Invoke-IsXpuSupported "C:\v" $XPU -Missing))

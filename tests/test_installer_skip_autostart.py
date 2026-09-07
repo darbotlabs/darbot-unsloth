@@ -151,5 +151,5 @@ def test_windows_installer_invalid_package_fails():
 
 def test_skip_autostart_is_documented_for_all_installers():
     readme = README.read_text(encoding = "utf-8")
-    assert "UNSLOTH_SKIP_AUTOSTART=1 sh" in readme
+    assert "UNSLOTH_SKIP_AUTOSTART=1 bash install.sh --local" in readme
     assert "$env:UNSLOTH_SKIP_AUTOSTART=1" in readme

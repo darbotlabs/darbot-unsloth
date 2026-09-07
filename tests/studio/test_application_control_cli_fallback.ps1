@@ -25,7 +25,7 @@ $install = Join-Path $repo "install.ps1"
 # Written out for the same reason as the trampoline: an edit on either side has to fail a
 # check rather than be copied into the expectation. This one gates a recursive delete.
 $ShimMarker = "unsloth-studio-managed-launcher"
-$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+$Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; import sysconfig; sys.exit('Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t)') if not (sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')) else None; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
 function Get-FunctionText {
     param([string] $Path, [string] $Name)
@@ -171,8 +171,12 @@ Check "and unspaced ones are not"    ($spaced -match '\srun\s--model\s')
 # --- Invoke-ManagedUnslothCli ---------------------------------------------------------------
 # Runs for real against this host's python3 -- the trampoline is swapped for a stub, because the
 # thing under test is the plumbing (exit code, argument fidelity, output routing), not unsloth.
-$python = (Get-Command python3 -ErrorAction SilentlyContinue)
-if (-not $python) { $python = (Get-Command python -ErrorAction SilentlyContinue) }
+$python = if ($env:UNSLOTH_TEST_PYTHON) {
+    Get-Command $env:UNSLOTH_TEST_PYTHON -CommandType Application -ErrorAction Stop
+} else {
+    Get-Command python3, python -All -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+}
 
 function Invoke-Managed {
     param([string] $Python, [string] $Trampoline, [string[]] $Arguments = @())

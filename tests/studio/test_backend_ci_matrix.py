@@ -195,6 +195,72 @@ def _floor_lint() -> Path:
     return REPO / "scripts" / "lint_backend_python_floor.py"
 
 
+def _floor_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("floor_lint_under_test", _floor_lint())
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_floor_batches_preserve_every_argument_with_windows_quoting():
+    import subprocess
+
+    module = _floor_module()
+    command = [r"C:\tool space\vermin.exe", "-t=3.14-"]
+    files = [f'C:\\source space\\emoji-\U0001f9a5-{i}\\"quoted".py' for i in range(40)]
+    batches = list(module.command_batches(command, files, limit = 200))
+    assert len(batches) > 1
+    assert [path for batch in batches for path in batch[len(command):]] == files
+    assert all(
+        len(subprocess.list2cmdline(batch).encode("utf-16-le")) // 2 + 1 <= 200
+        for batch in batches
+    )
+
+
+def test_floor_batches_reject_one_unrepresentable_argument():
+    import pytest
+
+    with pytest.raises(SystemExit, match = "command-line limit"):
+        list(_floor_module().command_batches(["vermin"], ["a" * 100], limit = 30))
+
+
+def test_floor_check_uses_upper_bound_and_collects_all_batch_failures(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    module = _floor_module()
+    monkeypatch.setattr(module, "declared_floor", lambda: (3, 14))
+    monkeypatch.setattr(module, "targets", lambda: ["a.py", "b.py"])
+    monkeypatch.setattr(module.shutil, "which", lambda _: "vermin")
+    original = module.command_batches
+    monkeypatch.setattr(
+        module, "command_batches",
+        lambda command, files: original(
+            command, files,
+            limit = len(module.subprocess.list2cmdline([*command, files[0]])) + 1,
+        ),
+    )
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+        assert "-t=3.14-" in command
+        assert "-t=3.14" not in command
+        return SimpleNamespace(
+            returncode = int(len(commands) == 1),
+            stdout = f"checked {command[-1]}\n", stderr = "",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module.main() == 1
+    assert len(commands) == 2
+    assert "checked b.py" in capsys.readouterr().out
+    assert module.main() == 0
+
+
 def test_the_floor_is_linted_on_every_pull_request():
     """What replaces the leg that was dropped, asserted through where it runs.
 

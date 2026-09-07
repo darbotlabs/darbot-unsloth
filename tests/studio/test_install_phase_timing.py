@@ -28,6 +28,7 @@ installer edit still installs -- so they are asserted rather than reviewed.
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -264,21 +265,27 @@ def _posix_filter_body() -> str:
     return run
 
 
+BASH = os.environ.get("UNSLOTH_TEST_BASH", "bash")
+
+
 def _bash_runs_posix_scripts() -> bool:
     """Whether `bash` here is a real POSIX shell rather than Windows' WSL launcher.
 
     On a windows-latest runner `bash` resolves to the WSL stub, which ignores the script
     and exits 1 with a UTF-16 "no distributions installed" message. That is not a finding
     about the filter, so the executing tests skip there. Probed rather than keyed off
-    sys.platform, so a Windows box with a working git-bash still runs them.
+    sys.platform alone: Git Bash works, but WSL cannot consume these Windows paths.
     """
     try:
         probe = subprocess.run(
-            ["bash", "-c", "printf ok"], capture_output = True, text = True, timeout = 30
+            [BASH, "-c", "printf 'ok:%s' \"$OSTYPE\""],
+            capture_output = True, text = True, timeout = 30
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return probe.returncode == 0 and probe.stdout.strip() == "ok"
+    if probe.returncode != 0 or not probe.stdout.startswith("ok:"):
+        return False
+    return os.name != "nt" or probe.stdout.partition(":")[2].startswith(("msys", "cygwin"))
 
 
 BASH_OK = _bash_runs_posix_scripts()
@@ -286,8 +293,8 @@ BASH_OK = _bash_runs_posix_scripts()
 
 def test_the_bash_probe_still_finds_bash_where_bash_exists():
     """A skip condition that quietly became always-true would disable the tests below."""
-    if sys.platform.startswith("win"):
-        pytest.skip("Windows has no POSIX bash by default; that is the case being skipped")
+    if sys.platform.startswith("win") and "UNSLOTH_TEST_BASH" not in os.environ:
+        pytest.skip("Windows does not guarantee POSIX bash; set UNSLOTH_TEST_BASH to test one")
     assert BASH_OK, (
         "the POSIX-bash probe failed on a platform that ships bash, so the tests that "
         "actually execute the shipped filter are being skipped everywhere"
@@ -303,10 +310,10 @@ def _run_posix_filter(tmp_path, fake_installer: str):
     body = _posix_filter_body()
     log = tmp_path / "install.log"
     script = body.replace("bash install.sh --local --no-torch", fake_installer)
-    script = script.replace("logs/install.log", str(log))
+    script = script.replace("logs/install.log", shlex.quote(log.as_posix()))
     script = script.replace("mkdir -p logs", ":")
     proc = subprocess.run(
-        ["bash", "-c", script],
+        [BASH, "-c", script],
         capture_output = True,
         text = True,
         cwd = tmp_path,

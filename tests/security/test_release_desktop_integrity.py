@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +112,8 @@ def _run_step(
     target_manifest_version: str = RELEASE_TAG,
     extra_env: dict[str, str] | None = None,
 ):
+    if os.name != "posix":
+        pytest.skip("POSIX shell release fixture requires native POSIX paths and mock executables")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok = True)
     _write_fake_gh(fake_bin / "gh")

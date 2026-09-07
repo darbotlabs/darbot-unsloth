@@ -4,10 +4,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from xml.etree import ElementTree
 
 import yaml
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -297,6 +299,8 @@ def _compile_fixture_elf(path: Path, *, origin_runpath: bool) -> None:
 
 
 def _fake_complete_appdir(tmp_path: Path) -> Path:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("AppImage fixture compiles Linux ELF objects and inspects their runtime ABI")
     appdir = tmp_path / "AppDir"
     binary = appdir / "usr/bin/unsloth-studio"
     binary.parent.mkdir(parents = True)
@@ -476,6 +480,8 @@ def test_complete_appimage_verifier_rejects_global_library_path_and_missing_orig
 
 def _apprun_mount(tmp_path: Path, name: str = "AppDir") -> Path:
     """An AppDir holding just what AppRun itself touches."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("AppRun fixture requires Linux executable/path and font-policy semantics")
 
     appdir = tmp_path / name
     binary = appdir / "usr/bin/unsloth-studio"

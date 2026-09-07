@@ -13,6 +13,7 @@ builds. Static analysis supplements, rather than replaces, runtime tests.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -50,12 +51,9 @@ EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 # AttributeError with a pre-3.11 fallback.
 
 
-# The floor is DECLARED, in the workflow, next to where the legs used to be.
-# Deriving it from the matrix became self-defeating once the matrix ran one interpreter: a 3.13-only matrix would move
-# the floor to 3.13 and leave this asserting that code written for 3.13 runs on 3.13. Deriving it from pyproject.toml
-# is not the answer either, because that says >= 3.9 and is not true today: unsloth/models/_utils.py already uses
-# tempfile.TemporaryDirectory(ignore_cleanup_errors), which is 3.10, so a 3.9 target fails on the tree as it stands.
-# So it is a number, written down once, in the workflow that would otherwise have tested it, and read from there.
+# The explicit workflow declaration keeps the support floor independent of which
+# matrix jobs happen to run. The current declaration includes the 3.14.7 patch
+# floor; Vermin checks its minor while runtime policy enforces patch/build details.
 FLOOR_KEY = "PYTHON_FLOOR"
 
 
@@ -88,6 +86,25 @@ def targets() -> list[str]:
     return found
 
 
+def command_batches(command: list[str], files: list[str], limit: int = 30000):
+    """Bound the Windows UTF-16 command line, including quoting and its terminator."""
+    batch = []
+    for path in files:
+        candidate = [*command, *batch, path]
+        units = len(subprocess.list2cmdline(candidate).encode("utf-16-le")) // 2 + 1
+        if units > limit:
+            if not batch:
+                raise SystemExit(f"floor checker argument exceeds the command-line limit: {path}")
+            yield [*command, *batch]
+            batch = []
+            units = len(subprocess.list2cmdline([*command, path]).encode("utf-16-le")) // 2 + 1
+            if units > limit:
+                raise SystemExit(f"floor checker argument exceeds the command-line limit: {path}")
+        batch.append(path)
+    if batch:
+        yield [*command, *batch]
+
+
 def main() -> int:
     floor = declared_floor()
     target = f"{floor[0]}.{floor[1]}"
@@ -104,15 +121,21 @@ def main() -> int:
     print(f"[floor] {len(files)} files must run on Python {target}, " f"the declared floor")
     command = [
         vermin,
+        "--processes=2",
         "--no-tips",
         "--violations",
-        f"-t={target}",
-        *files,
+        f"-t={target}-",
     ]
-    result = subprocess.run(command, capture_output = True, text = True)
-    sys.stdout.write(result.stdout)
-    sys.stderr.write(result.stderr)
-    if result.returncode == 0:
+    failed = False
+    for batch in command_batches(command, files):
+        result = subprocess.run(
+            batch, capture_output = True, text = True, encoding = "utf-8",
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        failed |= result.returncode != 0
+    if not failed:
         print(f"[floor] OK: nothing needs more than {target}")
         return 0
     print(

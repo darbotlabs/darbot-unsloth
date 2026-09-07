@@ -312,6 +312,8 @@ class BenchContext:
 
 # ── the output directory lock ───────────────────────────────────────
 
+_WINDOWS_LOCK_HEADER = b"UNSLOTH_LOCK_V1 "
+
 
 class OutDirLock:
     """One output directory, held by one run, FROM BEFORE THE FIRST THING THAT MOVES OR STARTS.
@@ -401,6 +403,10 @@ class OutDirLock:
         seek to 0 and the single byte. The property genuinely given up is NFS correctness, which
         the `O_EXCL` design did not have either.
 
+        Windows locks are mandatory: a contender cannot read byte zero to learn the holder.
+        Keep that same mutex byte for compatibility, but publish a versioned identity after it.
+        An older reader still refuses generically; neither version changes or bypasses the lock.
+
         THE LOCK IS NEVER UNLINKED, only released. Unlinking on close reintroduces the same race
         from the other end: a launcher that has opened the path but not yet locked it would end up
         holding a lock on an inode with no name, while the next run creates a fresh file and locks
@@ -431,7 +437,10 @@ class OutDirLock:
             return
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, f"{os.getpid()} {session_id}\n".encode())
+        record = f"{os.getpid()} {session_id}\n".encode()
+        if os.name == "nt":
+            record = b"\0" + _WINDOWS_LOCK_HEADER + record
+        os.write(fd, record)
         try:
             os.fsync(fd)
         except OSError:
@@ -500,6 +509,17 @@ class OutDirLock:
     def _read_marker(path: Path) -> "Optional[tuple[str, int]]":
         """(session, pid) written in a marker, or None if it does not yet say."""
         try:
+            if os.name == "nt" and path.name == ".running.lock":
+                with path.open("rb") as marker:
+                    marker.seek(1)
+                    record = marker.read()
+                if record.startswith(_WINDOWS_LOCK_HEADER):
+                    if not record.endswith(b"\n"):
+                        return None
+                    parts = record[len(_WINDOWS_LOCK_HEADER):].decode("utf-8").split()
+                    return (parts[1], int(parts[0])) if len(parts) == 2 else None
+                # Old plain-text markers remain readable when unlocked. A locked old marker
+                # cannot be identified safely, so the existing OSError fallback stays generic.
             parts = path.read_text(encoding = "utf-8").split()
             return (
                 parts[1] if len(parts) > 1 else path.name.removeprefix(".running."),
@@ -559,8 +579,34 @@ class OutDirLock:
     def _alive(pid: int) -> bool:
         if pid <= 0:
             return False
+        if os.name == "nt":
+            if pid > 0xFFFFFFFF:
+                return False
+            import ctypes
+            from ctypes import wintypes
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel.CloseHandle.restype = wintypes.BOOL
+            # os.kill(pid, 0) terminates a process on Windows. A SYNCHRONIZE-only handle
+            # observes its state without sending a signal or requesting termination rights.
+            handle = kernel.OpenProcess(0x00100000, False, pid)
+            if not handle:
+                # ERROR_INVALID_PARAMETER means the PID is absent. Access denied and other
+                # indeterminate states must not authorize removing a potentially live marker.
+                return ctypes.get_last_error() != 87
+            try:
+                return kernel.WaitForSingleObject(handle, 0) != 0
+            finally:
+                kernel.CloseHandle(handle)
         try:
             os.kill(pid, 0)
+            return True
+        except PermissionError:
             return True
         except (OSError, ProcessLookupError):
             return False

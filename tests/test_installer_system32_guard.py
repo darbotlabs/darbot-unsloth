@@ -106,7 +106,7 @@ def test_install_ps1_guard_failure_message_is_actionable():
     block = src[idx : src.index("\n        }\n", idx)]
     assert "Windows system folder" in block
     assert "Run as administrator" in block, "explain how the user got into System32"
-    assert "irm https://unsloth.ai/install.ps1 | iex" in block, "give the exact re-run command"
+    assert "irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" in block, "give the exact fork re-run command"
     assert "Exit-InstallFailure" in block, "must go through the rollback-aware failure path"
     assert "$env:USERPROFILE" not in block, (
         "this branch is only reached once USERPROFILE was rejected as a candidate, so "
@@ -322,7 +322,7 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
     res = _run_relocation_block(tmp_path, system_root, current_dir, home)
     assert res.returncode == 42, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "cannot be installed from" in res.stdout
-    assert "irm https://unsloth.ai/install.ps1 | iex" in res.stdout
+    assert "irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" in res.stdout
     assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
 
 

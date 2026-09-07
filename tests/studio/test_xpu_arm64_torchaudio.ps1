@@ -43,14 +43,12 @@ Check "extraction kept the arm64 branch" ($specsFn.Extent.Text -match 'win-arm64
 $arm = Get-XpuTorchSpecs -Platform "win-arm64"
 $x64 = Get-XpuTorchSpecs -Platform "win-amd64"
 Check "arm64 drops torchaudio"        (-not ($arm -match '^torchaudio'))
-Check "arm64 keeps torch"             (($arm | Where-Object { $_ -eq 'torch>=2.6,<2.11.0' }).Count -eq 1)
-Check "arm64 keeps torchvision"       (($arm | Where-Object { $_ -eq 'torchvision>=0.21,<0.26.0' }).Count -eq 1)
+Check "arm64 keeps torch"             (($arm | Where-Object { $_ -eq 'torch==2.14.0' }).Count -eq 1)
+Check "arm64 keeps torchvision"       (($arm | Where-Object { $_ -eq 'torchvision==0.29.0' }).Count -eq 1)
 Check "arm64 asks for exactly two"    ($arm.Count -eq 2)
-Check "x64 keeps torchaudio"          (($x64 | Where-Object { $_ -eq 'torchaudio>=2.6,<2.11.0' }).Count -eq 1)
+Check "x64 keeps torchaudio"          (($x64 | Where-Object { $_ -eq 'torchaudio==2.11.0' }).Count -eq 1)
 Check "x64 asks for the full trio"    ($x64.Count -eq 3)
-# The floor is not cosmetic: unsloth/models/_utils.py raises at import for an XPU device on
-# torch < 2.6, so a 2.4 floor installs an environment that cannot run.
-Check "floor is 2.6 on both"          (($arm[0] -eq 'torch>=2.6,<2.11.0') -and ($x64[0] -eq 'torch>=2.6,<2.11.0'))
+Check "both architectures pin the maintained Torch" (($arm[0] -eq 'torch==2.14.0') -and ($x64[0] -eq 'torch==2.14.0'))
 # An unaskable interpreter yields "", and a Linux/macOS platform is never win-arm64: both must
 # keep torchaudio rather than dropping it everywhere.
 foreach ($p in @("", "linux-x86_64", "macosx-14.0-arm64", "win32")) {
@@ -65,8 +63,8 @@ Check "the probe lowercases its answer"   ((Get-FunctionAst "Get-VenvPlatformTag
 # trio. Three sites: fresh XPU install, flavor repair, release-preservation probe.
 $src = Get-Content -Raw -LiteralPath $installPs1
 Check "builder is used at 3 sites" (([regex]::Matches($src, 'Get-XpuTorchSpecs -Platform')).Count -eq 3)
-# The literal trio must exist in exactly ONE place now (the builder itself), or the drift is back.
-Check "one literal torchaudio 2.6 pin" (([regex]::Matches($src, '"torchaudio>=2\.6,<2\.11\.0"')).Count -eq 1)
+# XPU callers must delegate rather than copying a tuple; other backends legitimately share these versions.
+Check "one maintained audio spec in the builder" (([regex]::Matches($specsFn.Extent.Text, '"torchaudio==2\.11\.0"')).Count -eq 1)
 
 # A kept-release pin substitutes one spec at a time and must restore the same way.
 $origAssign = $ast.FindAll({ param($n)
@@ -75,13 +73,13 @@ $origAssign = $ast.FindAll({ param($n)
     $n.Right.Extent.Text -match 'Get-XpuTorchSpecs'
 }, $true)
 Check "the repair calls the builder" ($origAssign.Count -eq 1)
-# The non-XPU arm keeps the generic 2.4 floor: only the ceiling moved to the 2.11 line.
+# The non-XPU repair must use the same maintained Torch, not a historical open range.
 $defaultAssign = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
     $n.Left.Extent.Text -eq '$_fixTorchSpec' -and
-    $n.Right.Extent.Text -match '^"torch>='
+    $n.Right.Extent.Text -eq '"torch==2.14.0"'
 }, $true)
-Check "the repair keeps the 2.4 CUDA floor" ($defaultAssign.Count -eq 1 -and $defaultAssign[0].Right.Extent.Text -eq '"torch>=2.4,<2.12.0"')
+Check "the repair pins CUDA Torch2.14" ($defaultAssign.Count -eq 1)
 
 if ($failures -gt 0) { Write-Host "FAILED: $failures" -ForegroundColor Red; exit 1 }
 Write-Host "All XPU arm64 torchaudio checks passed."

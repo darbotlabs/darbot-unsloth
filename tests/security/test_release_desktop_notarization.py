@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +34,8 @@ def _write_fake_command(path: Path, body: str):
 
 
 def _run_script(run: str, env: dict[str, str], cwd: Path):
+    if os.name != "posix":
+        pytest.skip("Notarization simulation uses POSIX shell mock executables, not Windows tools")
     return subprocess.run(
         ["bash", "-c", run],
         cwd = cwd,

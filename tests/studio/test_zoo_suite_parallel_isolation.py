@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -30,8 +31,6 @@ ISOLATED = [
     ),
 ]
 
-ZOO_MARKER = "--dist loadfile tests/"
-
 # Deselected because it needs a GPU.
 MLX_DESELECT = (
     "tests/test_mlx_finetune_last_n_layers.py::"
@@ -44,14 +43,22 @@ def _commands() -> list[str]:
     text = WORKFLOW.read_text(encoding = "utf-8")
     joined = re.sub(r"\\\s*\n\s*", " ", text)
     return [
-        line.strip()
+        shlex.join([re.sub(r"\$ZOO_TESTS(?=/|$)", "tests", token) for token in shlex.split(line)])
         for line in joined.splitlines()
         if "python -m pytest" in line and not line.lstrip().startswith("#")
     ]
 
 
 def _zoo_parallel() -> str:
-    hits = [c for c in _commands() if ZOO_MARKER in c and "-n 4" in c]
+    hits = []
+    for command in _commands():
+        tokens = shlex.split(command)
+        pairs = set(zip(tokens, tokens[1:]))
+        if (
+            ("--dist", "loadfile") in pairs and ("-n", "4") in pairs
+            and any(token in ("tests", "tests/") for token in tokens)
+        ):
+            hits.append(command)
     assert len(hits) == 1, (
         f"expected exactly one parallel zoo pytest run, found {len(hits)}. "
         f"This guard cannot check a command it cannot identify."
@@ -83,12 +90,46 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
     )
 
 
+def test_the_isolated_root_and_ignore_paths_are_normalized(tmp_path, monkeypatch):
+    workflow = tmp_path / "workflow.yml"
+    workflow.write_text(
+        'python -m pytest -n 4 --dist loadfile "$ZOO_TESTS" '
+        '--ignore="$ZOO_TESTS/test_hf_xet_fallback.py"\n',
+        encoding = "utf-8",
+    )
+    monkeypatch.setitem(globals(), "WORKFLOW", workflow)
+    tokens = shlex.split(_zoo_parallel())
+    assert "tests" in tokens
+    assert "--ignore=tests/test_hf_xet_fallback.py" in tokens
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "-n 40 --dist loadfile $ZOO_TESTS",
+        "-n 4 --dist load $ZOO_TESTS",
+        "-n 4 --dist loadfile $ZOO_TESTS_OTHER",
+        "-n 4 --dist loadfile $ZOO_TESTS/test_one.py",
+        "-n 4 --dist loadfile elsewhere --ignore=$ZOO_TESTS",
+    ],
+)
+def test_a_changed_parallel_or_root_contract_is_not_silently_accepted(tmp_path, monkeypatch, arguments):
+    workflow = tmp_path / "workflow.yml"
+    workflow.write_text(f"python -m pytest {arguments}\n", encoding = "utf-8")
+    monkeypatch.setitem(globals(), "WORKFLOW", workflow)
+    with pytest.raises(AssertionError, match = "expected exactly one parallel zoo"):
+        _zoo_parallel()
+    if "$ZOO_TESTS_OTHER" in arguments:
+        assert "$ZOO_TESTS_OTHER" in _commands()[0]
+
+
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
     cmd = _zoo_parallel()
-    covered = f"--ignore={path}" in cmd or (
+    tokens = shlex.split(cmd)
+    covered = f"--ignore={path}" in tokens or (
         path.rsplit("/", 1)[-1].startswith("test_mlx_")
-        and "--ignore-glob='tests/test_mlx_*.py'" in cmd
+        and "--ignore-glob=tests/test_mlx_*.py" in tokens
     )
     assert covered, (
         f"{path} ({reason}) is not ignored by the parallel zoo run, so it goes back to "
@@ -152,7 +193,7 @@ def test_the_deselects_survive_on_the_parallel_run() -> None:
 
 def test_the_mlx_family_leaves_the_parallel_run_as_a_glob() -> None:
     """Exclude all MLX tests because their partial shims contaminate workers."""
-    assert "--ignore-glob='tests/test_mlx_*.py'" in _zoo_parallel(), (
+    assert "--ignore-glob=tests/test_mlx_*.py" in shlex.split(_zoo_parallel()), (
         "the parallel zoo run no longer excludes the mlx family as a glob, so the next "
         "test_mlx_*.py added upstream goes back to poisoning whichever file follows it"
     )

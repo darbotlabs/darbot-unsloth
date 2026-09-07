@@ -14,11 +14,9 @@ The numbers below are the real ones from that payload.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from tests.studio.studiobench.runtime.types import Recorder, new_session_id
+from tests.studio.studiobench.runtime.types import OutDirLock, Recorder, new_session_id
 from tests.studio.studiobench.sweep import floor_table
 
 
@@ -220,27 +218,16 @@ def test_the_directory_is_reusable_once_the_first_run_closes(tmp_path):
     second.close()
 
 
-def test_a_marker_from_a_dead_process_does_not_block_forever(tmp_path):
+def test_a_marker_from_a_dead_process_does_not_block_forever(tmp_path, studiobench_dead_pid):
     """A crashed run must not lock the directory against every later one."""
     stale = tmp_path / ".running.deadsession"
     tmp_path.mkdir(parents = True, exist_ok = True)
-    # A pid that cannot be alive: this process's own pid is taken, so use one past the max.
-    with open("/proc/sys/kernel/pid_max", encoding = "utf-8") as fh:
-        dead_pid = int(fh.read().strip()) - 1
+    dead_pid = studiobench_dead_pid
     stale.write_text(f"{dead_pid} deadsession\n", encoding = "utf-8")
-    if _pid_alive(dead_pid):
-        pytest.skip("the chosen pid happens to be alive")
+    assert not OutDirLock._alive(dead_pid)
     rec = Recorder(tmp_path / "payload.jsonl", new_session_id())
     rec.close()
     assert not stale.exists(), "a marker naming a dead process should be cleared, not obeyed"
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 # ── the rows these guards emit must actually be emittable ──────────────────

@@ -7,8 +7,11 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
+import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -25,13 +28,7 @@ def test_fixture_files_exist():
         assert (FIXTURES / name).is_file(), name
 
 
-def test_fixture_bytes_are_deterministic(tmp_path):
-    """Re-running `_build.py` must produce byte-identical archives (deterministic builds)."""
-    expected: dict[str, str] = {}
-    for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
-        expected[name] = hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest()
-
-    rebuild_dir = tmp_path / "rebuild"
+def _rebuild_archive_fixtures(rebuild_dir):
     rebuild_dir.mkdir()
     builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
@@ -56,14 +53,160 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
 
-    for name, want_sha in expected.items():
-        got = hashlib.sha256((rebuild_dir / name).read_bytes()).hexdigest()
-        assert got == want_sha, (
-            f"rebuild of {name} produced different bytes:\n"
-            f"  expected: {want_sha}\n"
-            f"  actual:   {got}\n"
-            "_build.py is non-deterministic; pin members tighter."
-        )
+
+def _archive_contents_and_metadata(path):
+    """Ignore only the deflate representation and the offsets/sizes it necessarily changes."""
+    if path.suffix == ".whl":
+        raw = path.read_bytes()
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            assert members and members[0].header_offset == 0, "unexpected ZIP preamble"
+            assert archive.testzip() is None
+            attributes = set(zipfile.ZipInfo.__slots__) - {
+                "header_offset", "compress_size", "_end_offset",
+            }
+            contents = []
+            end = 0
+            for info in members:
+                assert info.header_offset == end, "unexpected ZIP gap or member order"
+                header_end = info.header_offset + zipfile.sizeFileHeader
+                header = struct.unpack(
+                    zipfile.structFileHeader, raw[info.header_offset:header_end]
+                )
+                assert header[0] == zipfile.stringFileHeader
+                # The fixture builder writes seekable, non-ZIP64 archives without descriptors.
+                assert not header[3] & 8, "unexpected ZIP data descriptor"
+                assert header[8] == info.compress_size and header[9] == info.file_size
+                payload_start = header_end + header[10] + header[11]
+                end = payload_start + info.compress_size
+                contents.append((
+                    {name: getattr(info, name, None) for name in sorted(attributes)},
+                    header[:8] + header[9:],
+                    raw[header_end:payload_start],
+                    archive.read(info),
+                ))
+            assert end == archive.start_dir, "unexpected ZIP bytes before central directory"
+            footer_start = len(raw) - len(archive.comment) - zipfile.sizeEndCentDir
+            footer = struct.unpack(
+                zipfile.structEndArchive, raw[footer_start:footer_start + zipfile.sizeEndCentDir]
+            )
+            assert footer[0] == zipfile.stringEndArchive, "unexpected ZIP trailing data"
+            assert footer[6] == archive.start_dir, "inconsistent ZIP directory offset"
+            assert footer[5] == footer_start - archive.start_dir, "inconsistent ZIP directory size"
+            assert footer[7] == len(archive.comment)
+            return archive.comment, footer[:6] + footer[7:], contents
+    raw = path.read_bytes()
+    assert raw[:3] == b"\x1f\x8b\x08" and not raw[3] & 0xE0
+    offset = 10
+    if raw[3] & 4:
+        offset += 2 + int.from_bytes(raw[offset:offset + 2], "little")
+    for flag in (8, 16):
+        if raw[3] & flag:
+            offset = raw.index(b"\0", offset) + 1
+    if raw[3] & 2:
+        offset += 2
+    decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+    tar_bytes = decoder.decompress(raw[offset:]) + decoder.flush()
+    assert decoder.eof and len(decoder.unused_data) == 8, "expected one complete gzip member"
+    trailer = decoder.unused_data
+    assert int.from_bytes(trailer[:4], "little") == zlib.crc32(tar_bytes)
+    assert int.from_bytes(trailer[4:], "little") == len(tar_bytes) % (1 << 32)
+    # Exact uncompressed tar bytes include all member headers, payloads, order and padding.
+    return raw[:offset], trailer, tar_bytes
+
+
+def test_fixture_bytes_are_deterministic(tmp_path):
+    """Repeat bytes within one codec; preserve every payload and metadata field across codecs."""
+    first, second = tmp_path / "first", tmp_path / "second"
+    _rebuild_archive_fixtures(first)
+    _rebuild_archive_fixtures(second)
+    for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+        assert _archive_contents_and_metadata(first / name) == _archive_contents_and_metadata(
+            FIXTURES / name
+        ), f"fixture members, payload or metadata changed: {name}"
+
+
+@pytest.mark.parametrize("change", [
+    "payload", "name", "timestamp", "mode", "member-comment",
+    "archive-comment", "extra", "creator", "order", "duplicate",
+])
+def test_cross_codec_fixture_comparison_rejects_semantic_changes(tmp_path, change):
+    import copy
+
+    original = FIXTURES / "clean_wheel.whl"
+    changed = tmp_path / "changed.whl"
+    with zipfile.ZipFile(original) as source, zipfile.ZipFile(changed, "w") as target:
+        target.comment = b"changed" if change == "archive-comment" else source.comment
+        members = source.infolist()
+        if change == "order":
+            members = list(reversed(members))
+        if change == "duplicate":
+            members = [*members, members[0]]
+        for index, member in enumerate(members):
+            info = copy.copy(member)
+            payload = source.read(member)
+            if index == 0:
+                if change == "payload":
+                    payload += b"changed"
+                elif change == "name":
+                    info.filename += ".changed"
+                elif change == "timestamp":
+                    info.date_time = (2000, 1, 1, 0, 0, 0)
+                elif change == "mode":
+                    info.external_attr ^= 0o111 << 16
+                elif change == "member-comment":
+                    info.comment = b"changed"
+                elif change == "extra":
+                    info.extra = b"\xff\xff\x00\x00"
+                elif change == "creator":
+                    info.create_system = 0
+            target.writestr(info, payload)
+    assert _archive_contents_and_metadata(original) != _archive_contents_and_metadata(changed)
+
+
+@pytest.mark.parametrize("offset", [4, 7, 10, 14])
+def test_zip_local_header_metadata_cannot_hide_behind_unchanged_central_metadata(tmp_path, offset):
+    original = FIXTURES / "clean_wheel.whl"
+    raw = bytearray(original.read_bytes())
+    raw[offset] ^= 8 if offset == 7 else 1
+    changed = tmp_path / "changed.whl"
+    changed.write_bytes(raw)
+    assert _archive_contents_and_metadata(original) != _archive_contents_and_metadata(changed)
+
+
+def test_zip_trailing_data_is_not_a_codec_difference(tmp_path):
+    changed = tmp_path / "changed.whl"
+    changed.write_bytes((FIXTURES / "clean_wheel.whl").read_bytes() + b"unexpected")
+    with pytest.raises(AssertionError, match = "ZIP trailing data"):
+        _archive_contents_and_metadata(changed)
+
+
+@pytest.mark.parametrize("change", ["gzip-header", "tar-header", "extra-gzip-member"])
+def test_gzip_fixture_comparison_preserves_container_and_tar_metadata(tmp_path, change):
+    import gzip
+    import io
+
+    original = FIXTURES / "malicious_sdist.tar.gz"
+    raw = original.read_bytes()
+    if change == "gzip-header":
+        raw = raw[:4] + bytes([raw[4] ^ 1]) + raw[5:]
+    elif change == "tar-header":
+        payload = bytearray(gzip.decompress(raw))
+        payload[0] ^= 1
+        stream = io.BytesIO()
+        with gzip.GzipFile(fileobj = stream, mode = "wb", mtime = 0, filename = "", compresslevel = 6) as writer:
+            writer.write(payload)
+        raw = stream.getvalue()
+    else:
+        raw += gzip.compress(b"", mtime = 0)
+    changed = tmp_path / "changed.tar.gz"
+    changed.write_bytes(raw)
+    if change == "extra-gzip-member":
+        with pytest.raises(AssertionError, match = "one complete gzip member"):
+            _archive_contents_and_metadata(changed)
+    else:
+        assert _archive_contents_and_metadata(original) != _archive_contents_and_metadata(changed)
 
 
 def _critical_or_high(findings) -> list:
@@ -2268,6 +2411,18 @@ def _audited_requirements(root):
     for req in sorted((root / "studio" / "backend" / "requirements").glob("*.txt")):
         for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
             spec = raw.split("#", 1)[0].strip()
+            if spec and req.name == "no-torch-constraints.txt":
+                from packaging.requirements import InvalidRequirement, Requirement
+
+                try:
+                    constraint = Requirement(spec)
+                except InvalidRequirement as error:
+                    raise AssertionError(f"{req.name}:{lineno}: invalid negative constraint") from error
+                assert (
+                    str(constraint.specifier) == "<0"
+                    and not constraint.url and not constraint.extras and not constraint.marker
+                ), f"{req.name}:{lineno} is not an unconditional negative constraint: {spec}"
+                continue
             if spec and not spec.startswith("-") and "git+" not in spec:
                 yield f"{req.name}:{lineno}", spec
     with open(root / "pyproject.toml", "rb") as fh:
@@ -2389,13 +2544,41 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
     )
 
 
-def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
+def test_audit_targets_the_current_supported_python_minor():
+    assert _supported_python_versions(REPO_ROOT) == ["3.14"]
+
+
+@pytest.mark.parametrize("invalid", [
+    "torch>=2.14", "torch @ git+https://example.invalid/repo",
+    "-r other.txt", 'torch<0; python_version < "3.14"',
+])
+def test_only_the_negative_constraint_file_is_excluded(tmp_path, invalid):
+    directory = tmp_path / "studio" / "backend" / "requirements"
+    directory.mkdir(parents = True)
+    (directory / "no-torch-constraints.txt").write_text("torch<0\n", encoding = "utf-8")
+    (directory / "studio.txt").write_text("torch>=2.14\n", encoding = "utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = []\n[project.optional-dependencies]\nhuggingfacenotorch = []\n',
+        encoding = "utf-8",
+    )
+    assert list(_audited_requirements(tmp_path)) == [("studio.txt:1", "torch>=2.14")]
+    (directory / "no-torch-constraints.txt").write_text(invalid + "\n", encoding = "utf-8")
+    with pytest.raises(AssertionError, match = "negative constraint"):
+        list(_audited_requirements(tmp_path))
+
+
+@pytest.mark.parametrize("spec", ["torch>=2.14", "torch==2.*", "torch<0"])
+def test_digest_guard_still_rejects_unpinned_installed_packages(monkeypatch, spec):
+    monkeypatch.setitem(globals(), "_audited_requirements", lambda _: [("studio.txt:1", spec)])
+    with pytest.raises(AssertionError, match = "not pinned to one version"):
+        test_digest_pinned_packages_are_pinned_on_every_supported_python()
+
+
+def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch, tmp_path):
     """The helpers above must work on 3.9/3.10, where `tomllib` does not exist.
 
-    pyproject declares requires-python >=3.9 and testpaths ["tests/security"], so a bare
-    `pytest` from the repo root runs this module on 3.9 and 3.10. `tomllib` landed in 3.11
-    (PEP 680), so an unguarded `import tomllib` there is a collection-time
-    ModuleNotFoundError, not a verdict.
+    This is an intentionally historical parser fixture, not the current project's
+    runtime policy. Keep its old range explicit so current metadata can evolve.
 
     Simulated rather than skipped: the interpreter running the suite is whatever CI picked
     (3.12 today), so the below-3.11 branch is only ever reached by making the version look
@@ -2434,8 +2617,13 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", without_tomllib)
 
-    assert _supported_python_versions(REPO_ROOT)[0] == "3.9"
-    assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python = ">=3.9,<3.11"\ndependencies = ["example==1.0"]\n'
+        '[project.optional-dependencies]\nhuggingfacenotorch = []\n',
+        encoding = "utf-8",
+    )
+    assert _supported_python_versions(tmp_path) == ["3.9", "3.10"]
+    assert list(_audited_requirements(tmp_path)) == [("pyproject.toml", "example==1.0")]
 
 
 # ──────────────────────────────────────────────────────────────────────

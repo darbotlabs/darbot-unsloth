@@ -202,8 +202,12 @@ Write-Host "=== Invoke-BoundedPythonProbe keeps the reason it failed ==="
 # "the HIP DLLs will not load", "torch is not installed" and "the import never came back" arrived
 # at the caller as one silent False -- and the caller deletes the environment over that answer.
 # The bounding and the async drain must survive intact, so a real child process is launched.
-$py = (Get-Command python3 -ErrorAction SilentlyContinue)
-if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue) }
+$py = if ($env:UNSLOTH_TEST_PYTHON) {
+    Get-Command $env:UNSLOTH_TEST_PYTHON -CommandType Application -ErrorAction Stop
+} else {
+    Get-Command python3, python -All -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+}
 Check "an interpreter is available to probe" ($null -ne $py)
 
 foreach ($file in @("install.ps1", "studio/setup.ps1")) {

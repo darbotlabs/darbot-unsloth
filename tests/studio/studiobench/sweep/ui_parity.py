@@ -1989,9 +1989,15 @@ def cross_side_mismatch(
 
 
 def shards_of(pattern: str) -> list[Path]:
-    root = Path(pattern).parent if "/" in pattern else Path(".")
-    stem = Path(pattern).name
-    return sorted(p / "payload.jsonl" for p in root.glob(stem) if (p / "payload.jsonl").exists())
+    candidate = Path(pattern)
+    if candidate.is_dir():
+        payload = candidate / "payload.jsonl"
+        return [payload] if payload.is_file() else []
+    return sorted(
+        p / "payload.jsonl"
+        for p in candidate.parent.glob(candidate.name)
+        if (p / "payload.jsonl").is_file()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
