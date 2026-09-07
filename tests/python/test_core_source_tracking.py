@@ -68,6 +68,29 @@ def test_explicit_checkout_stays_fixed_even_with_inherited_main(stack, monkeypat
     assert "tracking" not in stack._core_source_payload()
 
 
+def test_missing_editable_checkout_never_falls_back_to_the_old_archive(
+    stack, monkeypatch, tmp_path,
+):
+    stack._remember_core_source(source(A), tracking = "main")
+    provenance = {"url": (tmp_path / "missing-wip").as_uri(), "dir_info": {"editable": True}}
+    monkeypatch.setattr(
+        importlib.metadata, "distribution",
+        lambda name: SimpleNamespace(read_text = lambda path: json.dumps(provenance)),
+    )
+    assert stack._core_is_editable() is True
+    with pytest.raises(RuntimeError, match = "working checkout"):
+        stack._core_repair_source("unsloth")
+
+
+def test_an_editable_source_keeps_the_local_overlay_path(stack):
+    import inspect
+    code = inspect.getsource(stack.install_python_stack)
+    selection = code.index('record["kind"] == "checkout" and not local_repo and (')
+    assert selection < code.index("_repair_duplicate_core_metadata(")
+    assert 'local_repo = record["path"]' in code[selection:code.index("_repair_duplicate_core_metadata(")]
+    assert '_core_is_editable() or SCRIPT_DIR.parent.resolve() == Path(record["path"])' in code
+
+
 def test_repair_of_a_new_explicit_pin_does_not_inherit_old_tracking(stack):
     stack._remember_core_source(source(A), tracking = "main")
     stack._remember_core_source(source(B))

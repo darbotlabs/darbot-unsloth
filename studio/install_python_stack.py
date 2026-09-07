@@ -5990,6 +5990,16 @@ def _core_tracking_intent(source: str) -> str | None:
     return None
 
 
+def _core_is_editable() -> bool:
+    try:
+        from importlib.metadata import distribution
+
+        provenance = json.loads(distribution("unsloth").read_text("direct_url.json") or "{}")
+        return provenance.get("dir_info", {}).get("editable") is True
+    except (ImportError, OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def _resolve_tracked_core_source() -> str:
     if _uv_is_offline():
         raise RuntimeError("A tracked main update needs network access; repair still uses its retained snapshot.")
@@ -6162,6 +6172,11 @@ def _core_repair_source(name: str, local_repo: str = "", ci_source_overlay: str 
             )
             if Path(path, "studio", "install_zoo.py").is_file():
                 return path
+            if "dir_info" in provenance:
+                raise RuntimeError(
+                    "The selected Core checkout is missing or incomplete; restore it or select --local. "
+                    "A remote snapshot will not replace the working checkout."
+                )
         commit = provenance.get("vcs_info", {}).get("commit_id", "")
         if (
             url.rstrip("/").removesuffix(".git") == "https://github.com/darbotlabs/darbot-unsloth"
@@ -7577,6 +7592,10 @@ def install_python_stack() -> int:
         if _canonical_package_name(package_name) == "unsloth":
             _remember_core_source(selected_core_source, tracking = core_tracking)
             record = _core_source_record(selected_core_source)
+            if record["kind"] == "checkout" and not local_repo and (
+                _core_is_editable() or SCRIPT_DIR.parent.resolve() == Path(record["path"])
+            ):
+                local_repo = record["path"]
             if not core_tracking and record["kind"] == "archive":
                 _note(
                     f"Core is pinned to {record['commit'][:12]}; "
@@ -7686,7 +7705,9 @@ def install_python_stack() -> int:
         _progress("base packages (tracked main)")
     elif not NO_TORCH:
         zoo_helper = Path(local_repo).resolve() / "studio" / "install_zoo.py" if local_repo else SCRIPT_DIR / "install_zoo.py"
-        zoo_command = [sys.executable, str(zoo_helper), "--python", sys.executable]
+        zoo_command = [
+            sys.executable, str(zoo_helper), "--python", sys.executable, "--reinstall-source",
+        ]
         if CONSTRAINTS.is_file():
             zoo_command += ["--constraints", str(CONSTRAINTS)]
         run("Bootstrapping maintained Zoo companion", zoo_command)

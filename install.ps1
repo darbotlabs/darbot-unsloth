@@ -5936,7 +5936,7 @@ exit 0
         substep "GGUF-only mode: deferring Zoo and Torch-dependent packages."
         $zooBootstrapExit = 0
     } else {
-        $ZooBootstrapArgs = @($ZooHelper, "--python", $VenvPython, "--installer", "uv")
+        $ZooBootstrapArgs = @($ZooHelper, "--python", $VenvPython, "--installer", "uv", "--reinstall-source")
         $ZooConstraints = Join-Path (Split-Path -Parent $ZooHelper) "backend\requirements\single-env\constraints.txt"
         if (Test-Path -LiteralPath $ZooConstraints -PathType Leaf) {
             $ZooBootstrapArgs += @("--constraints", $ZooConstraints)
@@ -5946,14 +5946,6 @@ exit 0
             try {
                 $env:PATH = (Split-Path -Parent $script:UvExe) + ";" + $env:PATH
                 & $VenvPython @ZooBootstrapArgs
-                if ($LASTEXITCODE -eq 0 -and -not $StudioLocalInstall) {
-                    $ZooRefreshConstraints = @()
-                    if (Test-Path -LiteralPath $ZooConstraints -PathType Leaf) {
-                        $ZooRefreshConstraints = @("--constraint", $ZooConstraints)
-                    }
-                    # Fork commits may share a Zoo version; refresh only this selected source.
-                    & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth-zoo @ZooRefreshConstraints $ZooSource
-                }
             } finally { $env:PATH = $savedPath }
         }
     }

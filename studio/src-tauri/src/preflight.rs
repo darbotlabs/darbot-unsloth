@@ -650,12 +650,18 @@ mod tests {
                 Some(reason)
             );
         }
-        // Unstamped builds fall back to the floor, so the managed gate reduces
-        // to the shared one for dev and CI.
-        assert_eq!(expected_backend_version(), MIN_DESKTOP_BACKEND_VERSION);
+        // Release builds use their stamped backend target; unstamped builds
+        // retain the shared minimum for dev and CI.
+        let expected = option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION")
+            .unwrap_or(MIN_DESKTOP_BACKEND_VERSION);
+        assert_eq!(expected_backend_version(), expected);
+        assert_eq!(
+            managed_backend_version_stale_reason(Some(expected)),
+            None
+        );
         assert_eq!(
             managed_backend_version_stale_reason(Some(MIN_DESKTOP_BACKEND_VERSION)),
-            None
+            backend_version_outdated_reason(Some(MIN_DESKTOP_BACKEND_VERSION), expected)
         );
         assert_eq!(
             managed_backend_version_stale_reason(Some("2026.5.2")).as_deref(),

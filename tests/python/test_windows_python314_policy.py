@@ -297,13 +297,14 @@ def test_companion_bootstrap_honors_shared_constraints(tmp_path, has_constraints
         "run": lambda label, command: calls.append(command),
     }
     exec(compile(ast.Module(body = [bootstrap], type_ignores = []), "<bootstrap>", "exec"), namespace)
-    expected = [interpreter, str(helper), "--python", interpreter]
+    expected = [interpreter, str(helper), "--python", interpreter, "--reinstall-source"]
     if has_constraints:
         expected += ["--constraints", str(constraints)]
     assert calls == ([] if core_refreshed else [expected])
     windows = (ROOT / "install.ps1").read_text(encoding = "utf-8")
     assert '$ZooBootstrapArgs += @("--constraints", $ZooConstraints)' in windows
     assert "& $VenvPython @ZooBootstrapArgs" in windows
+    assert '"--installer", "uv", "--reinstall-source"' in windows
 
 
 def test_turing_warning_does_not_disable_cuda_or_abort():
