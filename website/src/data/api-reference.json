@@ -5,9 +5,9 @@
   "openapi": "3.1.0",
   "schemaPath": "api/openapi.json",
   "sourceRepository": "https://github.com/darbotlabs/darbot-unsloth",
-  "sourceRevision": "d61491e1d087546c2c5e055401c1836c3245853e",
+  "sourceRevision": "6a9dc34fa75eb63fe70542eb963999e4448a7f1a",
   "generationContext": "installed-package",
-  "generatedAt": "2026-09-07T09:11:35.643797+00:00",
+  "generatedAt": "2026-09-07T12:13:21.475309+00:00",
   "license": "AGPL-3.0-only",
   "attribution": "Generated from Unsloth Studio, originally by Unsloth AI; this fork is maintained by Darbot Labs.",
   "omittedPrivateDefaults": 3,
@@ -18,7 +18,7 @@
     "operations": 445,
     "schemas": 399
   },
-  "wheelSha256": "c4a28d57ed3b82660080fb3b971bacd37df28bc46267befab2ffde14fd4f47cc",
+  "wheelSha256": "ac1d8721647f8cd98547ce01cb56047a0c79a4c19864f802ba7f81045185c17b",
   "omissions": [
     {
       "path": "/api/models/loras",

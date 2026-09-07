@@ -1,11 +1,11 @@
 {
-  "status": "preparing",
+  "status": "published",
   "tag": "v0.2.0",
   "desktopVersion": "0.2.0",
   "pythonVersion": "2026.9.3",
-  "publishedAt": null,
+  "publishedAt": "2026-09-07",
   "desktopSigned": false,
-  "summary": "Windows desktop and Python packages are being qualified for publication. A local build is not a published or production-qualified release.",
+  "summary": "Windows desktop 0.2.0 and Python 2026.9.3 are published with coordinated Python 3.14 support for CUDA and CPU profiles. Windows binaries are unsigned; documented hardware and feature limitations apply.",
   "assets": [
     {"name": "Unsloth_0.2.0_x64-setup.exe", "label": "Windows x64 installer", "description": "NSIS installer; unsigned. Review the release notes and checksum before installation."},
     {"name": "unsloth-studio.exe", "label": "Windows desktop executable", "description": "Desktop shell executable, not a self-contained Python or model bundle."},
