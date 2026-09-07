@@ -5,6 +5,12 @@ description: Run targeted repository checks and distinguish static policy tests,
 
 The repository has different test lanes for different questions. Run the smallest existing tests that cover your change, then escalate if those results require it. Do not infer production readiness from a broad test count.
 
+## Current execution policy: local only
+
+Repository GitHub Actions are disabled at the user's request. Run the relevant commands on the local qualified environment and keep sanitized results. Do not dispatch, re-run, or re-enable hosted workflows to obtain test results. The workflow files linked below are retained reference definitions, not currently active CI.
+
+Existing published Pages content remains separate from local output. A passing local site build, API-schema validation, or browser smoke test does not publish new pages.
+
 ## Validation levels
 
 | Level | What it can establish | What it cannot establish |
@@ -73,6 +79,8 @@ npm run typecheck --prefix website
 npm run build --prefix website
 ```
 
-The documentation build fails on broken internal links and anchors. Release-data tests prevent publication/version/filename drift; they do not verify remote release uploads.
+The documentation build fails on broken internal links and anchors. Release-data tests prevent publication/version/filename drift; they do not verify remote release uploads. OpenAPI checks enforce unique operation IDs, resolvable local references, installed-version identity, artifact bytes/counts, and recorded provenance.
+
+Preview with `npm run serve --prefix website` and verify changed behavior locally: method/tag/text filters, pagination, operation/model deep links, complete schema download, mobile overflow, and dark/light readability. Retain the production output for handoff without claiming that the new API catalog is live.
 
 **Sources:** [pytest configuration](https://github.com/darbotlabs/darbot-unsloth/blob/main/pyproject.toml), [tiny-Llama test](https://github.com/darbotlabs/darbot-unsloth/blob/main/tests/test_python314_gpu_smoke.py), [backend CI](https://github.com/darbotlabs/darbot-unsloth/blob/main/.github/workflows/studio-backend-ci.yml), [frontend CI](https://github.com/darbotlabs/darbot-unsloth/blob/main/.github/workflows/studio-frontend-ci.yml).

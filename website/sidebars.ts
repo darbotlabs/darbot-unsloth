@@ -7,7 +7,9 @@ const sidebars: SidebarsConfig = {
       'getting-started', 'windows', 'linux-macos', 'gguf-only', 'dependency-matrix', 'devices',
     ]},
     {type: 'category', label: 'Use Studio & train', items: [
-      'studio', 'training', 'datasets', 'data-recipes', 'audio', 'api', 'mcp', 'export',
+      'studio', 'training', 'datasets', 'data-recipes', 'audio', 'api',
+      {type: 'link', label: 'API reference & models', href: '/api-reference'},
+      'mcp', 'export',
     ]},
     {type: 'category', label: 'Understand & operate', items: [
       'architecture', 'storage', 'updates', 'builds-releases', 'security',

@@ -15,6 +15,16 @@ For first-run UI setup, start without `--api-only`, complete authentication, and
 
 When enabled in the running application, `/docs`, `/redoc`, and `/openapi.json` describe the actual installed schema. Documentation UI assets are served locally rather than from a third-party CDN.
 
+## Installed-version reference and schema download
+
+The [API reference and model catalog](/api-reference) provides a method/path/summary/tag filter, paginated operation inspection, request and response definitions, and a searchable model-schema catalog. Referenced models can be opened directly from an operation. Individual operation and model selections are shareable through the page URL.
+
+The catalog uses a captured, sanitized **installed-application** OpenAPI document, not inferred endpoint definitions. Its download retains the complete document except for the explicitly disclosed environment-local directory query defaults. Operation IDs are never rewritten by the website. Duplicate IDs, broken or external references, mismatched Python-version identity, and changed artifact bytes fail validation.
+
+Read the snapshot's timestamp, source revision, SHA-256, omission count, and license before treating it as the contract for a different installation. Schema publication is distinct from native desktop or GPU qualification. Mounted MCP tools are not included simply because the FastAPI application's OpenAPI schema was captured.
+
+The reference is read-only and performs its filtering locally. It has no live request runner or token storage, loads no external Swagger/Redoc/CDN, and never calls your Studio backend.
+
 ## Endpoint map
 
 | Purpose | Actual route |

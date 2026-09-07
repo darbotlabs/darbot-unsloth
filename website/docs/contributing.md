@@ -30,6 +30,8 @@ For Node changes, retain committed lockfiles and use the project's current toolc
 
 ## Documentation workflow
 
+Repository GitHub Actions are **disabled** at the user's request. Run the documentation checks locally; do not dispatch or re-enable a workflow, or use an alternate branch-deployment command to evade that restriction. Workflow files remain in the repository as inactive reference definitions.
+
 ```powershell
 npm ci --prefix website
 npm run start --prefix website
@@ -37,7 +39,7 @@ npm run start --prefix website
 
 The development server prints the project-prefixed URL. Documentation lives in `website/docs`; navigation is explicit in `website/sidebars.ts`. Use focused pages, meaningful headings, relative document links, and source links for claims.
 
-Before a docs PR:
+Before handing off a documentation change, run locally:
 
 ```powershell
 npm test --prefix website
@@ -47,9 +49,13 @@ npm run build --prefix website
 
 Broken links and anchors fail the production build. Search is generated locally from the built public content, with no hosted search credentials.
 
+Use `npm run serve --prefix website` to preview the production output at the printed `/darbot-unsloth/` path. Verify desktop/mobile layouts and changed interactions against that local server. Report the commands and actual outcomes rather than depending on a new hosted CI run.
+
 ## Publication discipline
 
 Do not set `release.json` to `published` before the actual assets and checksums have been uploaded and verified. Keep version schemes, filenames, signing state, and qualification notes aligned. The [release interface](builds-releases.md#website-publication-interface) is designed for one atomic metadata update.
+
+Local output is not publication. The existing Pages deployment remains live; newer pages and the API catalog must not be advertised as deployed until an explicitly authorized publication path consistent with disabled Actions has succeeded. GitHub Releases uploads are a separate maintainer action and do not implicitly authorize a Pages workflow.
 
 Preserve upstream copyright/license notices and third-party attribution. Never include real credentials, model cache contents, private session artifacts, or user datasets in a documentation PR.
 

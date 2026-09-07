@@ -1,0 +1,40 @@
+{
+  "status": "ready",
+  "version": "2026.9.3",
+  "title": "Unsloth UI Backend",
+  "openapi": "3.1.0",
+  "schemaPath": "api/openapi.json",
+  "sourceRepository": "https://github.com/darbotlabs/darbot-unsloth",
+  "sourceRevision": "d61491e1d087546c2c5e055401c1836c3245853e",
+  "generationContext": "installed-package",
+  "generatedAt": "2026-09-07T09:11:35.643797+00:00",
+  "license": "AGPL-3.0-only",
+  "attribution": "Generated from Unsloth Studio, originally by Unsloth AI; this fork is maintained by Darbot Labs.",
+  "omittedPrivateDefaults": 3,
+  "sha256": "9ed406ab2c20da3bc19a792a236880b06701aa07fe5555b6f71a4a3e22078933",
+  "bytes": 1320156,
+  "counts": {
+    "paths": 380,
+    "operations": 445,
+    "schemas": 399
+  },
+  "wheelSha256": "c4a28d57ed3b82660080fb3b971bacd37df28bc46267befab2ffde14fd4f47cc",
+  "omissions": [
+    {
+      "path": "/api/models/loras",
+      "method": "get",
+      "parameter": "exports_dir"
+    },
+    {
+      "path": "/api/models/loras",
+      "method": "get",
+      "parameter": "outputs_dir"
+    },
+    {
+      "path": "/api/models/checkpoints",
+      "method": "get",
+      "parameter": "outputs_dir"
+    }
+  ],
+  "capture": "Running installed backend, including the two frontend shell routes"
+}

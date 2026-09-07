@@ -1,0 +1,2 @@
+# The captured schema is checksum-pinned and must survive Windows checkouts unchanged.
+static/api/openapi.json -text

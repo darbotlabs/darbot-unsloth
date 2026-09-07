@@ -19,13 +19,14 @@ Upstream documentation is valuable for model-specific concepts, but it may use a
 | --- | --- |
 | Core/root Apache-licensed material | [Root LICENSE](https://github.com/darbotlabs/darbot-unsloth/blob/main/LICENSE) |
 | Studio and AGPL-marked components | [Studio AGPL-3.0 license](https://github.com/darbotlabs/darbot-unsloth/blob/main/studio/LICENSE.AGPL-3.0) and [COPYING](https://github.com/darbotlabs/darbot-unsloth/blob/main/COPYING) |
+| Generated Studio OpenAPI document | Retains **AGPL-3.0-only** and upstream/fork provenance; see the [API reference](/api-reference) |
 | Maintained vendored Zoo | [Companion license](https://github.com/darbotlabs/darbot-unsloth/blob/main/studio/backend/vendor/unsloth_zoo_compat/LICENSE) and retained per-file notices |
 | Vendored truststore | [Vendor documentation](https://github.com/darbotlabs/darbot-unsloth/blob/main/studio/backend/vendor/README.md) and adjacent MIT license |
 | Models, datasets, native helpers, and package dependencies | Their own upstream licenses and distribution notices |
 
 Read individual file headers and component licenses; do not assume that one repository-level label relicenses every bundled dependency. The maintained Zoo modifications do not remove its original attribution.
 
-The newly authored wiki/site code follows the root Apache-2.0 license. Links and explanatory summaries do not change the licensing of Studio or third-party material.
+The newly authored wiki/site code follows the root Apache-2.0 license. The generated Studio OpenAPI artifact is an explicit exception: the website's package license does **not** relicense that AGPL-covered schema. Links and explanatory summaries do not change the licensing of Studio or third-party material.
 
 ## Distribution and network use
 

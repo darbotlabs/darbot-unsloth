@@ -1,0 +1,70 @@
+.page {max-width: 1380px; padding-top: 3rem; padding-bottom: 4rem;}
+.header h1 {font-size: clamp(2.1rem, 4vw, 3.3rem); letter-spacing: -.045em; margin-top: .9rem;}
+.intro {max-width: 920px; font-size: 1.1rem; color: var(--ifm-color-content-secondary);}
+.notice {background: var(--site-panel); border: 1px solid var(--site-border); border-left: 4px solid var(--ifm-color-primary); padding: 1.5rem; border-radius: 8px; margin: 2rem 0;}
+.notice h2 {font-size: 1.35rem;}
+.notice p:last-child {margin-bottom: 0;}
+.snapshotHeading {display: flex; align-items: start; justify-content: space-between; gap: 1rem;}
+.snapshotHeading a {flex-shrink: 0;}
+.break {overflow-wrap: anywhere;}
+.tabs {display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0;}
+.filters {display: grid; grid-template-columns: minmax(220px, 2fr) minmax(120px, .6fr) minmax(160px, 1fr) auto; gap: 1rem; align-items: end; margin: 1rem 0;}
+.filters label, .schemaFilter {display: flex; flex-direction: column; gap: .4rem; font-size: .85rem; font-weight: 650;}
+.filters input, .filters select, .schemaFilter input {width: 100%; border: 1px solid var(--site-border); border-radius: 6px; background: var(--ifm-background-color); color: var(--ifm-font-color-base); padding: .65rem; font: inherit; min-height: 44px;}
+.filters input:focus-visible, .filters select:focus-visible, .schemaFilter input:focus-visible {outline: 2px solid var(--ifm-color-primary); outline-offset: 2px;}
+.schemaFilter {max-width: 650px;}
+.pagination {display: flex; align-items: center; justify-content: flex-end; gap: 1rem; margin: 1rem 0; font-size: .9rem;}
+.tableScroll {overflow-x: auto; max-width: 100%;}
+.operations, .detailTable {display: table; width: 100%; margin: 0;}
+.operations > thead th {text-align: left;}
+.operations > tbody > tr > td, .operations > tbody > tr > th {vertical-align: top;}
+.operations > tbody > tr > th {font-weight: 400; min-width: 250px;}
+.operations > tbody > tr > td:first-child {width: 90px;}
+.operations code, .detailTable code {overflow-wrap: anywhere; white-space: normal;}
+.operations > tbody > tr.selected {background: var(--site-panel); outline: 1px solid var(--ifm-color-primary);}
+.caption {caption-side: top; text-align: left; font-size: .87rem; padding: .7rem 0; color: var(--ifm-color-content-secondary);}
+.method {display: inline-block; font-size: .74rem; font-weight: 800; font-family: var(--ifm-font-family-monospace); padding: .15rem .45rem; border-radius: 5px; border: 1px solid var(--site-border); color: var(--ifm-color-primary); background: var(--site-panel);}
+.method[data-method='DELETE'] {color: #a72035; background: #fff0f1; border-color: #e2afb8;}
+.method[data-method='POST'], .method[data-method='PATCH'], .method[data-method='PUT'] {color: #765008; background: #fff4dd; border-color: #dcc28e;}
+[data-theme='dark'] .method[data-method='DELETE'] {color: #ffb8c3; background: #46212a; border-color: #83515d;}
+[data-theme='dark'] .method[data-method='POST'], [data-theme='dark'] .method[data-method='PATCH'], [data-theme='dark'] .method[data-method='PUT'] {color: #ffdc98; background: #3d321d; border-color: #756137;}
+.pathButton {border: 0; padding: 0; background: none; color: var(--ifm-color-primary); text-align: left; cursor: pointer; font-size: .94rem; max-width: 100%;}
+.pathButton:hover {text-decoration: underline; text-underline-offset: 3px;}
+.summary {font-size: .88rem; margin-top: .35rem; color: var(--ifm-color-content-secondary);}
+.operationDetails {padding: .8rem; font-size: .93rem;}
+.operationDetails h3 {font-size: 1.05rem; margin: 1.5rem 0 .7rem;}
+.description {white-space: pre-wrap; overflow-wrap: anywhere;}
+.detailTable {font-size: .87rem;}
+.detailTable th, .detailTable td {text-align: left; vertical-align: top;}
+.detailTable th {min-width: 110px;}
+.detailTable td {max-width: 650px; overflow-wrap: anywhere;}
+.schemaSummary {margin: .35rem 0; overflow-wrap: anywhere;}
+.references {display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem; font-size: .82rem; margin-top: .35rem;}
+.references button {border: 1px solid var(--site-border); border-radius: 4px; background: var(--site-panel); color: var(--ifm-color-primary); padding: .1rem .4rem; cursor: pointer; font: inherit; overflow-wrap: anywhere; text-align: left; max-width: 100%;}
+.media {margin: .65rem 0;}
+.raw {border: 1px solid var(--site-border); border-radius: 6px; padding: .75rem 1rem; margin: 1rem 0;}
+.raw summary {cursor: pointer; color: var(--ifm-color-primary); font-weight: 650;}
+.raw pre {max-height: 500px; overflow: auto; margin-top: 1rem; font-size: .8rem;}
+.raw code {white-space: pre; overflow-wrap: normal;}
+.warning {border-left: 3px solid var(--ifm-color-warning); padding-left: 1rem;}
+.modelList {display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-bottom: 2rem;}
+.modelList button {text-align: left; border: 1px solid var(--site-border); background: var(--site-panel); color: var(--ifm-font-color-base); border-radius: 5px; padding: .65rem; cursor: pointer; overflow-wrap: anywhere; font-size: .85rem;}
+.modelList button:hover, .modelList button.activeModel {border-color: var(--ifm-color-primary); color: var(--ifm-color-primary);}
+.modelDetail {border-top: 2px solid var(--site-border); padding-top: 2rem;}
+.modelDetail h2 {overflow-wrap: anywhere;}
+.notes {margin-top: 3rem; border-top: 1px solid var(--site-border); padding-top: 2rem;}
+.notes h2 {font-size: 1.5rem;}
+@media (max-width: 996px) {
+  .filters {grid-template-columns: 1fr 1fr;}
+  .filters label:first-child {grid-column: 1 / -1;}
+  .snapshotHeading {flex-direction: column;}
+  .modelList {grid-template-columns: repeat(2, minmax(0, 1fr));}
+}
+@media (max-width: 600px) {
+  .page {padding-top: 2rem;}
+  .filters {grid-template-columns: 1fr;}
+  .modelList {grid-template-columns: 1fr;}
+  .notice {padding: 1rem;}
+  .pagination {justify-content: space-between; gap: .5rem;}
+  .operationDetails {padding: .1rem;}
+}

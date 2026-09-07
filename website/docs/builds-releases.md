@@ -14,6 +14,10 @@ description: Understand frontend, Python, Tauri, release qualification, artifact
 
 Always use [Downloads](/downloads) for current asset availability. An executable or wheel built on a maintainer's machine is not yet a qualified, uploaded release.
 
+:::important Local execution policy
+Repository GitHub Actions are currently disabled at the user's request. Run build, test, and browser-verification steps locally. Retained workflow files are inactive definitions, not permission to dispatch or re-enable Actions.
+:::
+
 ## Build layers
 
 1. **Studio frontend:** install its committed npm lockfile and run its production build.
@@ -44,7 +48,7 @@ Use the supported Python interpreter for build tooling. Do not upload distributi
 
 The intended Windows installer is an **unsigned NSIS x64** build. Its desktop executable is not a complete offline Python/model bundle. Native tooling, WebView2, the selected environment, network acquisition, and actual first-run behavior must be tested.
 
-Automatic signed desktop updating remains disabled. `createUpdaterArtifacts` is false in the Tauri bundle configuration, and release workflows additionally require `UNSLOTH_DESKTOP_PUBLISH=true` before publication work. A repository variable alone does not create signing keys, signatures, or a configured updater.
+Automatic signed desktop updating remains disabled. `createUpdaterArtifacts` is false in the Tauri bundle configuration. The retained release workflow definitions also contain an `UNSLOTH_DESKTOP_PUBLISH=true` gate, but repository-wide Actions are disabled and must not be re-enabled or dispatched. A repository variable alone neither authorizes an Actions run nor creates signing keys, signatures, or a configured updater.
 
 Do not invent signing material or ask users to disable platform security controls.
 
@@ -58,14 +62,26 @@ After all assets are qualified and uploaded:
 2. Set `status` to `published`.
 3. Set `publishedAt` to the actual `YYYY-MM-DD` date.
 4. Update `summary` with truthful qualification/known-issue information and keep `desktopSigned` accurate.
-5. Commit the JSON change atomically and run the site checks/build.
+5. Keep the JSON update together, run the site checks/build locally, and retain the output for an explicitly authorized publication path. Do not treat this metadata edit as a Pages deployment.
 
 The website constructs direct links only to this fork's GitHub Releases. The validator checks tag/version agreement, required filenames, a valid publication date, and the checksum manifest. It does not independently certify binaries or replace the maintainer's upload checks.
 
-## GitHub Pages
+## GitHub Pages and local output
 
-The workflow **Deploy documentation to GitHub Pages** in `.github/workflows/deploy-pages.yml` runs `npm ci`, release-data tests, typecheck, and the production build. It builds on documentation-scoped pushes/PRs and manual dispatch; deployment is restricted to `main`, with a separate `github-pages` environment and Pages/OIDC permissions.
+The existing published wiki remains at `https://darbotlabs.github.io/darbot-unsloth/`. Repository Actions are now disabled. **Deploy documentation to GitHub Pages** in `.github/workflows/deploy-pages.yml` is retained but inactive; its former push/PR/manual-dispatch triggers are not the current execution path.
 
-Pages must be configured to use GitHub Actions. The target is `https://darbotlabs.github.io/darbot-unsloth/`. No organization-root repository, custom domain, analytics service, or committed release binaries are needed.
+Run the corresponding website checks locally:
+
+```powershell
+npm ci --prefix website
+npm test --prefix website
+npm run typecheck --prefix website
+npm run build --prefix website
+npm run serve --prefix website
+```
+
+Preview the generated project path locally. The built `website/build/` directory, a schema capture, or a Git commit does **not** establish that a new API catalog or download page is live. No new Pages publication is claimed until an explicitly authorized path that respects disabled Actions has been completed. A static branch push must not be assumed to bypass Pages deployment workflows.
+
+GitHub Releases uploads are separate from both Actions execution and Pages publication. Maintainers can manage release assets without treating that as authorization to run workflows. No organization-root repository, custom domain, analytics service, or committed release binaries are needed.
 
 **Sources:** [build script](https://github.com/darbotlabs/darbot-unsloth/blob/main/build.sh), [stamp tool](https://github.com/darbotlabs/darbot-unsloth/blob/main/scripts/stamp_studio_release.py), [Tauri bundle policy](https://github.com/darbotlabs/darbot-unsloth/blob/main/studio/src-tauri/tauri.conf.json), [desktop workflow](https://github.com/darbotlabs/darbot-unsloth/blob/main/.github/workflows/release-desktop.yml).
