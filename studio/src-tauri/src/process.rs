@@ -425,6 +425,21 @@ fn studio_runtime_mutex_name_for_sid(sid: &str) -> String {
 }
 
 #[cfg(windows)]
+fn studio_runtime_mutex_name() -> Result<String, String> {
+    let root = crate::studio_paths::resolve_path(&crate::studio_paths::selected_root()?)?;
+    let legacy = crate::studio_paths::resolve_path(&crate::studio_paths::legacy_root()?)?;
+    if windows_paths_are_equal(&root.to_string_lossy(), &legacy.to_string_lossy())? {
+        return Ok(studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?));
+    }
+    // Match unsloth_cli._studio_runtime_gate: custom roots use the SHA256 of
+    // Path.resolve(strict=False), without the Win32 extended-length prefix.
+    Ok(format!(
+        "Global\\UnslothStudioManagedEnvironmentPath-{}",
+        crate::desktop_backend_owner::token_sha256(&root.to_string_lossy())
+    ))
+}
+
+#[cfg(windows)]
 fn current_windows_user_sid() -> Result<String, String> {
     use windows_sys::Win32::Security::{
         GetSidIdentifierAuthority, GetSidSubAuthority, GetSidSubAuthorityCount,
@@ -509,7 +524,7 @@ fn current_windows_user_sid() -> Result<String, String> {
 
 #[cfg(windows)]
 fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
-    let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
+    let name = studio_runtime_mutex_name()?;
     acquire_named_studio_runtime_launch_guard(&name)
 }
 
@@ -544,7 +559,7 @@ fn acquire_file_studio_runtime_launch_guard(
 
 #[cfg(unix)]
 fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
-    acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
+    acquire_file_studio_runtime_launch_guard(&crate::studio_paths::selected_root()?)
 }
 
 /// serialize managed-environment child creation with install and repair.
@@ -562,7 +577,7 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
 ) -> Result<T, String> {
     #[cfg(windows)]
     {
-        let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
+        let name = studio_runtime_mutex_name()?;
         return with_named_studio_runtime_launch_guard(&name, operation);
     }
     #[cfg(unix)]
@@ -1428,7 +1443,12 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
     // Old layout (bundled scripts, older upstream)
     let old_base = studio.join(".venv");
 
-    let bases = [new_base, old_base];
+    find_unsloth_binary_in_env_dirs(&[new_base, old_base])
+}
+
+fn find_unsloth_binary_in_env_dirs(
+    bases: &[std::path::PathBuf],
+) -> Option<std::path::PathBuf> {
 
     // Three passes rather than one, because a migration interrupted by an open
     // handle can leave HALF of either layout behind (install.ps1 says so where it
@@ -1447,7 +1467,7 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
     //
     // The returned path is the canonical handle whether or not the file exists:
     // every Windows caller reaches the CLI through its parent directory.
-    for base in &bases {
+    for base in bases {
         #[cfg(unix)]
         let bin = base.join("bin").join("unsloth");
         #[cfg(windows)]
@@ -1473,7 +1493,7 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
     // the package is importable, only that one candidate has something to
     // import and the other has nothing, which is the whole difference here.
     #[cfg(windows)]
-    for base in &bases {
+    for base in bases {
         if base.join("Scripts").join("python.exe").exists()
             && windows_site_packages_carries_the_cli(&base.join("Lib").join("site-packages"))
         {
@@ -1482,14 +1502,14 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
     }
 
     #[cfg(windows)]
-    for base in &bases {
+    for base in bases {
         if base.join("Scripts").join("python.exe").exists() {
             return Some(base.join("Scripts").join("unsloth.exe"));
         }
     }
 
     #[cfg(windows)]
-    for base in &bases {
+    for base in bases {
         let bin = base.join("Scripts").join("unsloth.exe");
         if bin.exists() {
             return Some(bin);
@@ -1500,10 +1520,37 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
+    match managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR")) {
+        Ok(Some(base)) => return find_unsloth_binary_in_env_dirs(&[base]),
+        Err(error) => {
+            warn!("{error}");
+            return None;
+        }
+        Ok(None) => {}
+    }
     let home = dirs::home_dir()?;
     let studio = home.join(".unsloth").join("studio");
 
     find_unsloth_binary_in_studio_dir(&studio)
+}
+
+pub(crate) fn managed_env_override(
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.to_str()
+        .ok_or_else(|| "UNSLOTH_ENV_DIR is not valid Unicode".to_string())?
+        .trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let path = std::path::PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err("UNSLOTH_ENV_DIR must be an absolute virtual environment path".to_string());
+    }
+    Ok(Some(path))
 }
 
 /// The Windows console script is a generated, unsigned PE wrapper. Application
@@ -1524,8 +1571,8 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// whatever sits at sys.path[0] is an explicit PYTHONPATH entry the console
 /// script would have honoured; a PYTHONPATH that starts at the working
 /// directory was measured selecting a different package before and after.
-/// getattr, not sys.flags.safe_path: the attribute is 3.11+ and this repo
-/// supports 3.9.
+/// The runtime check rejects older interpreters and free-threaded builds before
+/// importing the CLI. Installers pin the supported 3.14 maintenance release.
 ///
 /// -X utf8 is the one deliberate divergence from the console script, and it
 /// predates this work: the shipped updater already spelled it this way, and
@@ -1539,13 +1586,12 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// stream reconfigure and the -np<N> argv rewrite. It also sets Typer's
 /// prog_name to "unsloth"; the stub prints "unsloth.exe", so usage text reads
 /// slightly cleaner here rather than matching byte for byte.
-#[cfg(windows)]
 pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
-    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())";
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; import sysconfig; sys.exit('Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t)') if not (sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')) else None; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())";
 
 /// The program and argument vector that run the managed CLI without executing
-/// `bin` itself. On non-Windows platforms `bin` is a plain script with a
-/// shebang and stays the program.
+/// `bin` itself. Resolving the sibling interpreter also avoids stale shebangs
+/// after rebuilding the environment in place.
 #[derive(Debug)]
 pub(crate) struct ManagedCliInvocation {
     pub program: std::path::PathBuf,
@@ -1591,12 +1637,11 @@ pub(crate) fn resolve_managed_cli_invocation_with(
     args: &[&str],
     isolation: Isolation,
 ) -> Result<ManagedCliInvocation, String> {
-    #[cfg(windows)]
     {
         let python = bin
             .parent()
             .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
-            .join("python.exe");
+            .join(if cfg!(windows) { "python.exe" } else { "python" });
         if !python.is_file() {
             return Err(format!(
                 "Managed Python interpreter not found beside Unsloth: {}",
@@ -1623,16 +1668,6 @@ pub(crate) fn resolve_managed_cli_invocation_with(
         })
     }
 
-    #[cfg(not(windows))]
-    {
-        // Isolation is a Windows-only concept: POSIX executes the console script
-        // itself, so there is no interpreter command line to isolate.
-        let _ = isolation;
-        Ok(ManagedCliInvocation {
-            program: bin.to_path_buf(),
-            args: args.iter().copied().map(std::ffi::OsString::from).collect(),
-        })
-    }
 }
 
 /// Blocking flavour of [`resolve_managed_cli_invocation`].
@@ -1855,6 +1890,7 @@ fn windows_roots_from(
 /// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
 /// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
+    "UNSLOTH_ENV_DIR",
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
     "UNSLOTH_STUDIO_DOCUMENTS_HOME",
@@ -2203,9 +2239,8 @@ fn names_a_path(name: &str, value: &str) -> bool {
     true
 }
 
-/// Names every managed spawn removes before starting the child: Tauri uses the
-/// legacy Unsloth root whatever the environment says. Resolving one can only
-/// invent a failure for a value the child is never going to see.
+/// Resolved separately by studio_paths, then pinned for explicit environments.
+/// Ordinary desktop installs still remove these legacy-root overrides.
 const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"];
 
 /// Read only by the update and installer path (install_python_stack.py), so a
@@ -2219,7 +2254,7 @@ const UPDATE_ONLY_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 /// expand it themselves: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
 /// Path(), so a moved child would look for a folder called "~" beside its new
 /// working directory.
-fn expand_windows_user(
+pub(crate) fn expand_windows_user(
     value: &str,
     home: &std::path::Path,
     username: Option<&str>,
@@ -2485,6 +2520,7 @@ fn relative_override_pins(
     work_dir: &std::path::Path,
     skipped: &[&str],
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
+    let skipped: Vec<&str> = skipped.iter().copied().chain(["UNSLOTH_ENV_DIR"]).collect();
     relative_override_pins_from(
         std::env::current_dir().ok(),
         work_dir,
@@ -2493,7 +2529,7 @@ fn relative_override_pins(
         // current directory.
         |value| std::path::absolute(value).ok(),
         dirs::home_dir().as_deref(),
-        skipped,
+        &skipped,
         cfg!(windows),
     )
 }
@@ -2563,6 +2599,9 @@ fn child_skipped_env() -> Vec<&'static str> {
 /// reporting it as one starts an automatic repair that needs the same context
 /// and fails the same way.
 pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
+    if let Err(error) = crate::studio_paths::explicit_environment_root() {
+        return Some(ManagedContextError::PathSetting(error));
+    }
     let work_dir = match managed_cli_working_dir() {
         Ok(work_dir) => work_dir,
         Err(error) => return Some(ManagedContextError::WorkingDirectory(error)),
@@ -2625,6 +2664,7 @@ fn apply_managed_cli_context_inner(
     work_dir: &std::path::Path,
     skipped: &[&str],
 ) -> Result<(), String> {
+    crate::studio_paths::explicit_environment_root()?;
     if let Some(pins) = pins_for_move(work_dir, skipped)? {
         for (name, pinned) in pins {
             cmd.env(name, pinned);
@@ -2638,6 +2678,7 @@ fn apply_managed_cli_context_inner(
     for name in skipped {
         cmd.env_remove(name);
     }
+    crate::studio_paths::apply_child_root(cmd)?;
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -2645,6 +2686,7 @@ fn apply_managed_cli_context_inner(
 pub(crate) fn apply_managed_cli_context_tokio(
     cmd: &mut tokio::process::Command,
 ) -> Result<(), String> {
+    crate::studio_paths::explicit_environment_root()?;
     let work_dir = managed_cli_working_dir()?;
     let skipped = child_skipped_env();
     if let Some(pins) = pins_for_move(&work_dir, &skipped)? {
@@ -2658,6 +2700,7 @@ pub(crate) fn apply_managed_cli_context_tokio(
     for name in &skipped {
         cmd.env_remove(name);
     }
+    crate::studio_paths::apply_child_root(cmd.as_std_mut())?;
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -2718,6 +2761,23 @@ mod tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_environment_runtime_gate_uses_the_cli_data_root_mutex() {
+        crate::studio_paths::with_explicit_test_environment(|_, data| {
+            let expected = format!(
+                "Global\\UnslothStudioManagedEnvironmentPath-{}",
+                crate::desktop_backend_owner::token_sha256(&data.to_string_lossy())
+            );
+            assert_eq!(studio_runtime_mutex_name().unwrap(), expected);
+            let _guard = acquire_studio_runtime_launch_guard().unwrap();
+            let competing = std::thread::spawn(move || {
+                acquire_named_studio_runtime_launch_guard(&expected).map(|_| ())
+            }).join().unwrap();
+            assert!(competing.is_err());
+        });
     }
 
     // issue #8490: Application Control denies the generated unsloth.exe. Every
@@ -2918,6 +2978,28 @@ mod tests {
         fs::remove_dir_all(studio).unwrap();
     }
 
+    #[test]
+    fn environment_override_requires_an_absolute_path_and_preserves_it() {
+        assert_eq!(managed_env_override(None).unwrap(), None);
+        assert_eq!(managed_env_override(Some("  ".into())).unwrap(), None);
+        assert!(managed_env_override(Some("relative-env".into())).is_err());
+        let path = std::env::current_dir().unwrap().join("explicit-environment");
+        assert_eq!(
+            managed_env_override(Some(format!(" {} ", path.display()).into())).unwrap(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn managed_entrypoint_rejects_other_python_abis_before_importing_the_cli() {
+        let guard = WINDOWS_CLI_ENTRYPOINT.find("(3,14,7) <= sys.version_info[:3] < (3,15,0)").unwrap();
+        let cli_import = WINDOWS_CLI_ENTRYPOINT.find("from unsloth_cli import app").unwrap();
+        assert!(guard < cli_import);
+        assert!(WINDOWS_CLI_ENTRYPOINT.contains("sys.version_info.releaselevel == 'final'"));
+        assert!(WINDOWS_CLI_ENTRYPOINT.contains("not sysconfig.get_config_var('Py_GIL_DISABLED')"));
+        assert!(WINDOWS_CLI_ENTRYPOINT.contains("sys.implementation.name == 'cpython'"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn managed_invocation_runs_python_with_the_trampoline_and_caller_args() {
@@ -3053,38 +3135,40 @@ mod tests {
         assert!(error.contains("python.exe"), "{error}");
     }
 
-    // Parity guard: the change is Windows-only. macOS and Linux keep execing
-    // the console script with the caller's arguments and nothing else.
     #[cfg(not(windows))]
     #[test]
-    fn posix_managed_invocation_still_execs_the_console_script() {
+    fn posix_managed_invocation_uses_the_guarded_sibling_interpreter() {
         use std::ffi::OsString;
 
-        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
-        let invocation = resolve_managed_cli_invocation(bin, &["studio", "--api-only"]).unwrap();
+        let dir = temp_studio_dir("posix-managed-cli");
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("unsloth");
+        let python = dir.join("python");
+        fs::write(&python, "").unwrap();
+        let invocation = resolve_managed_cli_invocation(&bin, &["studio", "--api-only"]).unwrap();
 
-        assert_eq!(invocation.program, bin);
+        assert_eq!(invocation.program, python);
         assert_eq!(
             invocation.args,
-            vec![OsString::from("studio"), OsString::from("--api-only")]
+            ["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "--api-only"]
+                .into_iter().map(OsString::from).collect::<Vec<_>>()
         );
 
-        let cmd = build_managed_cli_command(bin, &["studio", "--api-only"]).unwrap();
-        assert_eq!(cmd.get_program(), bin.as_os_str());
+        let cmd = build_managed_cli_command(&bin, &["studio", "--api-only"]).unwrap();
+        assert_eq!(cmd.get_program(), python.as_os_str());
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
-            vec![OsString::from("studio"), OsString::from("--api-only")]
+            invocation.args
         );
         assert!(cmd.get_envs().next().is_none());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(not(windows))]
     #[test]
-    fn posix_managed_invocation_needs_no_interpreter_beside_the_script() {
-        // The Windows arm fails closed on a missing python.exe; the POSIX arm
-        // must not acquire that failure mode for a path that never had it.
+    fn posix_managed_invocation_fails_closed_without_its_interpreter() {
         let bin = std::path::Path::new("/definitely/not/here/bin/unsloth");
-        assert!(resolve_managed_cli_invocation(bin, &["-h"]).is_ok());
+        assert!(resolve_managed_cli_invocation(bin, &["-h"]).is_err());
     }
 
     fn listening_non_studio_port() -> (u16, mpsc::Sender<()>, std::thread::JoinHandle<()>) {
@@ -3149,6 +3233,10 @@ mod tests {
 /// Falls back to find_unsloth_binary() which checks ~/.unsloth/studio/unsloth_studio/
 /// (new layout) then ~/.unsloth/studio/.venv/ (old layout).
 pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
+    if let Some(base) = managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR"))? {
+        return find_unsloth_binary_in_env_dirs(&[base])
+            .ok_or_else(|| "Unsloth was not found in UNSLOTH_ENV_DIR; refusing to use another environment.".to_string());
+    }
     // In dev mode, check for local repo venv first
     #[cfg(debug_assertions)]
     {
@@ -3326,12 +3414,6 @@ pub fn start_backend(
 
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
-
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
-    // is a pre-existing user-controlled llama.cpp dir override; keep it.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.

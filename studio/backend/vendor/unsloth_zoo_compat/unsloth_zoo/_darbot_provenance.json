@@ -1,0 +1,30 @@
+{
+  "distribution": "unsloth_zoo",
+  "version": "2026.9.1+darbot.1",
+  "upstream_repository": "https://github.com/unslothai/unsloth-zoo",
+  "upstream_commit": "46d1da9558e9bec8d5de2f0de3911cce11e2b9c1",
+  "upstream_commit_timestamp": 1788694117,
+  "upstream_version": "2026.9.1",
+  "source_subdirectory": "unsloth_zoo",
+  "upstream_license_files": ["LICENSE", "COPYING"],
+  "maintained_by": "Darbot Labs",
+  "compatibility_baseline": {
+    "python": "CPython >=3.14.7,<3.15, standard GIL build",
+    "torch": "2.14.0",
+    "triton": "3.8.0",
+    "transformers": "5.16.1",
+    "trl": "1.12.0",
+    "datasets": "5.0.1",
+    "dill": "0.4.1",
+    "multiprocess": "0.70.19"
+  },
+  "modifications": [
+    "Reproducible companion dependency metadata, explicit local distribution version and standard CPython guard.",
+    "Keep Triton namespace providers backend-specific, including cut-cross-entropy's generic-Triton dependency.",
+    "Transformers 5 processing_class, optimizer and DataLoader worker initialization integration.",
+    "TRL 1.x removal of ConstantLengthDataset in favor of maintained pack_dataset.",
+    "Torch 2.14 public override helpers instead of private functional re-exports.",
+    "Respect explicit Dynamo disable before entering Torch 2.14 fullgraph wrappers.",
+    "Route every vendored SFT map and packing operation through the datasets 5 serial-worker policy."
+  ]
+}

@@ -63,7 +63,7 @@ export type UpdatePhase =
   | "shell_install"
   | "recovered_after_shell_failure";
 
-export type DesktopUpdatePolicyMode = "in_app" | "manual_linux_package";
+export type DesktopUpdatePolicyMode = "disabled" | "in_app" | "manual_linux_package";
 
 interface DesktopUpdatePolicy {
   mode: DesktopUpdatePolicyMode;
@@ -93,8 +93,8 @@ export interface RetainedUpdateFailure {
 }
 
 const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
-  mode: "in_app",
-  releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
+  mode: "disabled",
+  releasePageBaseUrl: "https://github.com/darbotlabs/darbot-unsloth/releases/tag/",
   releaseTagPrefix: "v",
 };
 const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
@@ -295,7 +295,7 @@ export function useTauriUpdate(isExternalServer = false) {
       console.warn("Desktop update policy check failed:", e);
       const failSafePolicy: DesktopUpdatePolicy = {
         ...DEFAULT_UPDATE_POLICY,
-        mode: "manual_linux_package",
+        mode: "disabled",
       };
       setUpdatePolicy(failSafePolicy);
       return { policy: failSafePolicy, resolved: false };
@@ -347,6 +347,13 @@ export function useTauriUpdate(isExternalServer = false) {
 
     try {
       const { policy, resolved } = await resolveUpdatePolicy();
+
+      if (policy.mode === "disabled") {
+        updateRef.current = null;
+        replaceInfo(null);
+        updateStatus("idle");
+        return;
+      }
 
       if (policy.mode === "manual_linux_package") {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
@@ -593,6 +600,7 @@ export function useTauriUpdate(isExternalServer = false) {
       // environment-mutating child of its own.
       if (!(await crashCleanupReady())) return;
       const { policy } = await resolveUpdatePolicy();
+      if (policy.mode === "disabled") return;
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
         if (!version) return;

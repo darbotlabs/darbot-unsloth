@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+# The companion is installed as its own distribution, including from a wheel
+# built from this sdist; retain its build metadata and original license files.
+graft studio/backend/vendor/unsloth_zoo_compat
+prune studio/backend/vendor/unsloth_zoo_compat/build
+prune studio/backend/vendor/unsloth_zoo_compat/dist
+prune studio/backend/vendor/unsloth_zoo_compat/*.egg-info
+recursive-exclude studio/backend/vendor/unsloth_zoo_compat *.py[cod]
+
 # The only veto that travels inside the sdist, so it holds for the wheel too:
 # `python -m build` rebuilds the wheel from the sdist, where exclude-package-data
 # and packages.find no longer bite (no .git tree for the file finder).

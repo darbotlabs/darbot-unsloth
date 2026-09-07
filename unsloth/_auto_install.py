@@ -12,41 +12,96 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-try: import torch
-except: raise ImportError('Install torch via `pip install torch`')
-from packaging.version import Version as V
-import re
-v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
-cuda = str(torch.version.cuda)
-is_ampere = torch.cuda.get_device_capability()[0] >= 8
-USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
-if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
-elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
-elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
-elif v  < V('2.3.0'): x = 'cu{}{}-torch220'
-elif v  < V('2.4.0'): x = 'cu{}{}-torch230'
-elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
-elif v  < V('2.5.1'): x = 'cu{}{}-torch250'
-elif v <= V('2.5.1'): x = 'cu{}{}-torch251'
-elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
-elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
-elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
-elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
-elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
-elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
-elif v  < V('2.10.1'): x = 'cu{}{}-torch2100'
-elif v  < V('2.11.0'): raise RuntimeError(f"Torch = {v} not supported!")
-elif v  < V('2.11.1'): x = 'cu{}{}-torch2110'
-elif v  < V('2.12.0'): raise RuntimeError(f"Torch = {v} not supported!")
-elif v  < V('2.12.1'): x = 'cu{}{}-torch2120'
-elif v  < V('2.12.2'): x = 'cu{}{}-torch2121'
-else: raise RuntimeError(f"Torch = {v} too new!")
-if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
-# torch 2.12 ships on cu126/cu130 only, and cu126 builds stop at sm_90, so Blackwell needs CUDA 13.
-if v >= V('2.12.0') and cuda not in ("12.6", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6 or 13.0! Got CUDA = {cuda}")
-x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
-# torch2110+ extras pin +cuNNN builds, which resolve only from the matching index.
-extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith(('-torch2110', '-torch2120', '-torch2121')) and cuda in ("12.6", "12.8", "13.0")) else ''
-print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation{extra_index}')
+"""Print resolver-safe commands for the maintained fork's verified stack."""
+
+import os
+from pathlib import Path
+import shlex
+import sys
+import sysconfig
+
+from packaging.version import Version
+
+
+def select_extra(torch):
+    version = Version(torch.__version__)
+    if version.is_prerelease or version.is_devrelease or version.base_version != "2.14.0":
+        raise RuntimeError(f"Torch {version} is unsupported; install stable Torch 2.14.0.")
+    if (
+        getattr(torch.version, "hip", None)
+        or getattr(torch.version, "xpu", None)
+        or "xpu" in (version.local or "")
+        or "rocm" in (version.local or "")
+    ):
+        raise RuntimeError("Automatic ROCm/XPU selection is not qualified; use the platform installer.")
+    cuda = torch.version.cuda
+    if cuda is None:
+        return "cpu", "https://download.pytorch.org/whl/cpu"
+    if str(cuda) != "13.0":
+        raise RuntimeError(
+            f"This helper exposes the canonical CUDA 13.0 extra, not CUDA {cuda}. "
+            "Verified Torch 2.14.0 CUDA 12.6 wheels are available upstream, "
+            "but are outside this fork's maintained CUDA profile. "
+            "CUDA families are not aliases."
+        )
+    return "cu130-torch2140", "https://download.pytorch.org/whl/cu130"
+
+
+def install_commands(torch, python = None):
+    python = str(python or sys.executable)
+    if not Path(python).is_absolute():
+        raise ValueError("The target Python executable must be absolute.")
+    extra, index = select_extra(torch)
+    root = Path(__file__).resolve().parents[1]
+    if not (root / "studio" / "install_zoo.py").is_file():
+        raise RuntimeError("Run this helper from the maintained Darbot checkout or its installed package.")
+    companion = root / "studio" / "backend" / "vendor" / "unsloth_zoo_compat"
+    if not (companion / "pyproject.toml").is_file():
+        raise RuntimeError("The maintained Zoo source is missing; restore the complete Darbot package.")
+    project = str(root) if (root / "pyproject.toml").is_file() else "unsloth"
+    # The core itself requires the unpublished Zoo version, so its first
+    # resolver transaction must already include the explicit source candidate.
+    return [
+        [python, "-m", "pip", "install", str(companion), f"{project}[{extra}]", "--extra-index-url", index],
+    ]
+
+
+def main():
+    if (
+        sys.implementation.name != "cpython"
+        or not ((3, 14, 7) <= sys.version_info[:3] < (3, 15, 0))
+        or sys.version_info[3] != "final"
+        or sysconfig.get_config_var("Py_GIL_DISABLED")
+    ):
+        raise RuntimeError("Use final, standard (GIL-enabled) CPython >=3.14.7,<3.15.")
+    override = os.environ.get("UNSLOTH_ENV_DIR")
+    if override and (
+        not Path(override).is_absolute()
+        or Path(override).resolve() != Path(sys.prefix).resolve()
+    ):
+        raise RuntimeError(
+            "Run this helper using the interpreter in the absolute UNSLOTH_ENV_DIR environment "
+            "so its Torch/CUDA build, not another interpreter's, is inspected."
+        )
+    try:
+        import torch
+    except ImportError as error:
+        raise ImportError("Install Torch 2.14.0 from the matching official cu130 or CPU index first.") from error
+    commands = install_commands(torch)
+    if torch.version.cuda and torch.cuda.is_available():
+        capability = torch.cuda.get_device_capability()
+        if capability < (8, 0):
+            print(
+                f"# sm_{capability[0]}{capability[1]}: CUDA eager remains available, "
+                "but this device is outside Triton 3.8's support policy; qualify kernels individually."
+            )
+    if os.name == "nt":
+        for command in commands:
+            print("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in command))
+            print("if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }")
+    else:
+        print(" && ".join(shlex.join(command) for command in commands))
+
+
+if __name__ == "__main__":
+    main()

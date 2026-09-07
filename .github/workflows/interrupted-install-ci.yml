@@ -36,6 +36,10 @@ on:
       # so an install_state() accepting a missing manifest would merge unrun.
       - 'unsloth_cli/_studio_deps.py'
       - 'studio/install_manifest.py'
+      - 'studio/python_policy.py'
+      - 'studio/install_zoo.py'
+      - 'studio/backend/vendor/unsloth_zoo_compat/pyproject.toml'
+      - 'unsloth_cli/_environment.py'
       # The requirement files are the phases: studio.txt declares structlog, whose absence
       # IS the reported false-ready bug, so moving a package between them changes every
       # interrupted state.

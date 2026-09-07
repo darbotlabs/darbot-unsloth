@@ -297,6 +297,33 @@ def _verify_install_supports(module, parameter: str) -> bool:
         return False
 
 
+def _interpreter_in(root: Path) -> dict:
+    probe = (
+        "import json,platform,sys,sysconfig; print(json.dumps({"
+        "'implementation':sys.implementation.name,"
+        "'version':platform.python_version(),"
+        "'cache_tag':sys.implementation.cache_tag,"
+        "'soabi':sysconfig.get_config_var('SOABI'),"
+        "'free_threaded':bool(sysconfig.get_config_var('Py_GIL_DISABLED')),"
+        "'platform':sysconfig.get_platform()}))"
+    )
+    for executable in _venv_executables(root):
+        if not executable.is_file():
+            continue
+        try:
+            output = subprocess.check_output(
+                [str(executable), "-I", "-S", "-c", probe],
+                stderr = subprocess.DEVNULL, text = True, encoding = "utf-8",
+                timeout = 5,
+            )
+            identity = json.loads(output)
+            if isinstance(identity, dict):
+                return identity
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    return {}
+
+
 def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
     """verify_install() result, or incomplete when the helper cannot be loaded.
 
@@ -341,6 +368,8 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
         ):
             # That venv's own metadata: unreadable through this interpreter.
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
+            if _verify_install_supports(module, "interpreter"):
+                kwargs["interpreter"] = _interpreter_in(root)
             if _verify_install_supports(module, "installed_conflicts"):
                 kwargs["installed_conflicts"] = installed_conflicts
             if deep and _verify_install_supports(module, "deep"):

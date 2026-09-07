@@ -27,7 +27,7 @@ REPO_README = REPO_ROOT / "README.md"
 def test_the_hub_readme_describes_the_shipped_images():
     text = HUB_README.read_text(encoding = "utf-8")
     for needle in (
-        "unsloth/unsloth:core",
+        "darbot-unsloth:core",
         "`latest`",
         "linux/arm64",
         "jupyter lab --ip 0.0.0.0 --port 8888 --allow-root",
@@ -54,7 +54,7 @@ def test_the_repo_readme_run_command_matches_the_image():
     text = REPO_README.read_text(encoding = "utf-8")
     start = text.index("#### Docker")
     section = text[start : text.index("####", start + 1)]
-    assert "unsloth/unsloth:core" in section
+    assert "darbot-unsloth:studio" in section
     assert "/workspace/host" in section
     assert "--ipc=host" in section
     for stale in ("2222:22", "/workspace/work"):

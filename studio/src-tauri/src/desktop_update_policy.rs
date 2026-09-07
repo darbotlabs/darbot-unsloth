@@ -1,15 +1,16 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-const DESKTOP_RELEASE_PAGE_BASE_URL: &str = "https://github.com/unslothai/unsloth/releases/tag/";
+const DESKTOP_RELEASE_PAGE_BASE_URL: &str = "https://github.com/darbotlabs/darbot-unsloth/releases/tag/";
 const DESKTOP_RELEASE_TAG_PREFIX: &str = "v";
 const DESKTOP_UPDATER_MANIFEST_URL: &str =
-    "https://github.com/unslothai/unsloth/releases/latest/download/latest.json";
+    "https://github.com/darbotlabs/darbot-unsloth/releases/latest/download/latest.json";
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DesktopUpdateMode {
+    Disabled,
     InApp,
     ManualLinuxPackage,
 }
@@ -52,17 +53,17 @@ struct ChannelPlatform {
 }
 
 #[tauri::command]
-pub(crate) fn desktop_update_policy() -> DesktopUpdatePolicy {
+pub(crate) fn desktop_update_policy(app: tauri::AppHandle) -> DesktopUpdatePolicy {
     DesktopUpdatePolicy {
-        mode: desktop_update_mode(),
+        mode: desktop_update_mode(&app),
         release_page_base_url: DESKTOP_RELEASE_PAGE_BASE_URL,
         release_tag_prefix: DESKTOP_RELEASE_TAG_PREFIX,
     }
 }
 
 #[tauri::command]
-pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateInfo>, String> {
-    if !matches!(desktop_update_mode(), DesktopUpdateMode::ManualLinuxPackage) {
+pub(crate) async fn check_desktop_manual_update(app: tauri::AppHandle) -> Result<Option<ManualUpdateInfo>, String> {
+    if !matches!(desktop_update_mode(&app), DesktopUpdateMode::ManualLinuxPackage) {
         return Ok(None);
     }
 
@@ -121,7 +122,7 @@ fn validate_channel_metadata(
     }
 
     let expected_prefix = format!(
-        "https://github.com/unslothai/unsloth/releases/download/v{normalized_version}/"
+        "https://github.com/darbotlabs/darbot-unsloth/releases/download/v{normalized_version}/"
     );
     for (platform, entry) in &metadata.platforms {
         if entry.url.trim().is_empty() {
@@ -147,7 +148,28 @@ fn validate_channel_metadata(
     Ok(())
 }
 
-fn desktop_update_mode() -> DesktopUpdateMode {
+pub(crate) fn updater_configured(app: &tauri::AppHandle) -> bool {
+    valid_updater_config(app.config().plugins.0.get("updater"))
+}
+
+fn valid_updater_config(config: Option<&serde_json::Value>) -> bool {
+    let Some(config) = config else {
+        return false;
+    };
+    config.get("pubkey").and_then(serde_json::Value::as_str)
+        .is_some_and(|key| !key.trim().is_empty())
+        && config.get("endpoints").and_then(serde_json::Value::as_array)
+            .is_some_and(|endpoints| !endpoints.is_empty() && endpoints.iter().all(|endpoint| {
+                endpoint.as_str() == Some(DESKTOP_UPDATER_MANIFEST_URL)
+            }))
+}
+
+fn desktop_update_mode(app: &tauri::AppHandle) -> DesktopUpdateMode {
+    // Fork releases must supply their own signer and published manifest before
+    // automatic updates are enabled; never silently install an upstream build.
+    if !updater_configured(app) {
+        return DesktopUpdateMode::Disabled;
+    }
     #[cfg(target_os = "linux")]
     {
         if std::env::var_os("APPIMAGE").is_some() {
@@ -380,6 +402,27 @@ fn split_alpha_numeric(value: &str) -> Option<(&str, u64)> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn unsigned_or_upstream_update_configuration_is_disabled() {
+        assert!(!super::valid_updater_config(None));
+        assert!(!super::valid_updater_config(Some(&serde_json::json!({
+            "pubkey": "",
+            "endpoints": [super::DESKTOP_UPDATER_MANIFEST_URL]
+        }))));
+        assert!(!super::valid_updater_config(Some(&serde_json::json!({
+            "pubkey": "test-only",
+            "endpoints": ["https://github.com/unslothai/unsloth/releases/latest/download/latest.json"]
+        }))));
+        assert!(super::valid_updater_config(Some(&serde_json::json!({
+            "pubkey": "test-only",
+            "endpoints": [super::DESKTOP_UPDATER_MANIFEST_URL]
+        }))));
+        assert!(!super::valid_updater_config(Some(&serde_json::json!({
+            "pubkey": "test-only",
+            "endpoints": [super::DESKTOP_UPDATER_MANIFEST_URL, "https://example.com/latest.json"]
+        }))));
+    }
+
+    #[test]
     fn compare_versions_orders_supported_suffixes() {
         assert!(super::compare_versions("2026.5.3", "2026.5.3-rc1") > 0);
         assert!(super::compare_versions("2026.5.3", "2026.5.3rc1") > 0);
@@ -448,11 +491,11 @@ mod tests {
     fn updater_policy_uses_normal_release_discovery_and_links() {
         assert_eq!(
             super::DESKTOP_UPDATER_MANIFEST_URL,
-            "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
+            "https://github.com/darbotlabs/darbot-unsloth/releases/latest/download/latest.json"
         );
         assert_eq!(super::DESKTOP_RELEASE_TAG_PREFIX, "v");
         let metadata = metadata_with_url(
-            "https://github.com/unslothai/unsloth/releases/download/v0.1.528-beta/app.AppImage",
+            "https://github.com/darbotlabs/darbot-unsloth/releases/download/v0.1.528-beta/app.AppImage",
         );
         assert!(super::validate_channel_metadata(&metadata, "0.1.528-beta").is_ok());
     }
@@ -460,10 +503,10 @@ mod tests {
     #[test]
     fn updater_policy_rejects_moving_legacy_mismatched_and_foreign_asset_urls() {
         for url in [
-            "https://github.com/unslothai/unsloth/releases/latest/download/app.AppImage",
-            "https://github.com/unslothai/unsloth/releases/download/desktop-latest/app.AppImage",
-            "https://github.com/unslothai/unsloth/releases/download/desktop-v0.1.528-beta/app.AppImage",
-            "https://github.com/unslothai/unsloth/releases/download/v0.1.529-beta/app.AppImage",
+            "https://github.com/darbotlabs/darbot-unsloth/releases/latest/download/app.AppImage",
+            "https://github.com/darbotlabs/darbot-unsloth/releases/download/desktop-latest/app.AppImage",
+            "https://github.com/darbotlabs/darbot-unsloth/releases/download/desktop-v0.1.528-beta/app.AppImage",
+            "https://github.com/darbotlabs/darbot-unsloth/releases/download/v0.1.529-beta/app.AppImage",
             "https://github.com/example/unsloth/releases/download/v0.1.528-beta/app.AppImage",
         ] {
             let metadata = metadata_with_url(url);

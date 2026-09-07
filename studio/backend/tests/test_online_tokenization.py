@@ -44,7 +44,6 @@ ROWS = MIN_ROWS_FOR_ONLINE + 5
 def _text_dataset(n = ROWS, extra_columns = None):
     data = {
         "text": [f"row {i}" for i in range(n)],
-        "conversations": [[{"role": "user", "content": str(i)}] for i in range(n)],
     }
     data.update(extra_columns or {})
     return datasets.Dataset.from_dict(data)
@@ -54,6 +53,7 @@ class _Tokenizer:
     """The narrowest thing the online path needs: callable, no ``.tokenizer``."""
 
     bos_token = "<s>"
+    eos_token = "</s>"
     chat_template = "{{ messages }}"
 
     def __call__(
@@ -92,10 +92,14 @@ def _base_kwargs(**overrides):
 
 @pytest.fixture(autouse = True)
 def _no_env_override(monkeypatch):
+    import multiprocessing
+
     monkeypatch.delenv(ENV_FLAG, raising = False)
-    # The gate refuses on spawn platforms; these tests describe Linux behaviour
-    # and simulate the other platforms explicitly where that is the point.
+    # These cases describe an explicitly fork-capable Linux launch, not the
+    # host default (forkserver on Python 3.14, spawn on Windows).
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = False: None)
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["fork", "spawn"])
     # Same for the TRL hook: the CPU test job installs no TRL, so leaving it
     # ambient makes every gate below report "no skip_prepare_dataset hook".
     # The detector itself is covered separately below.
@@ -177,7 +181,13 @@ def test_a_plain_list_dataset_is_refused():
     assert "map-style" in decision.reason
 
 
-@pytest.mark.parametrize("column", ["input_ids", "labels", "prompt", "completion"])
+@pytest.mark.parametrize(
+    "column",
+    [
+        "input_ids", "labels", "prompt", "completion", "completion_mask",
+        "assistant_masks", "messages", "conversations", "chosen", "rejected",
+    ],
+)
 def test_an_already_tokenized_dataset_is_refused(column):
     dataset = _text_dataset(extra_columns = {column: [[1, 2, 3]] * ROWS})
     decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
@@ -189,6 +199,14 @@ def test_a_processor_is_refused():
     decision = decide_online_tokenization(**_base_kwargs(processing_class = _Processor()))
     assert not decision.enabled
     assert "processor" in decision.reason
+
+
+def test_a_tokenizer_without_eos_keeps_native_preparation():
+    tokenizer = _Tokenizer()
+    tokenizer.eos_token = None
+    decision = decide_online_tokenization(**_base_kwargs(processing_class = tokenizer))
+    assert not decision.enabled
+    assert "EOS" in decision.reason
 
 
 def test_a_model_needing_token_type_ids_is_refused(monkeypatch):
@@ -373,8 +391,9 @@ def test_an_eval_split_the_transform_cannot_serve_disables_the_feature():
     assert "eval" in decision.reason
 
 
-def test_an_already_tokenized_eval_split_disables_the_feature():
-    tokenized_eval = datasets.Dataset.from_dict({"text": ["x"] * 8, "input_ids": [[1, 2]] * 8})
+@pytest.mark.parametrize("column", ["input_ids", "completion_mask", "assistant_masks", "messages"])
+def test_an_already_tokenized_eval_split_disables_the_feature(column):
+    tokenized_eval = datasets.Dataset.from_dict({"text": ["x"] * 8, column: [[1, 2]] * 8})
     decision = decide_online_tokenization(**_base_kwargs(eval_dataset = tokenized_eval))
     assert not decision.enabled
     assert "eval" in decision.reason
@@ -418,9 +437,7 @@ def test_the_transform_returns_input_ids_for_the_whole_batch():
 
 
 def test_the_transform_passes_the_whole_tokenizer_output_through():
-    """The eager map keeps `attention_mask` too (`remove_columns` drops only the
-    ORIGINAL columns), and both the collator and the attention dispatcher branch
-    on which keys are present."""
+    """Preserve tokenizer outputs while independently copying unmasked labels."""
 
     class _WithMask(_Tokenizer):
         def __call__(self, texts, **kwargs):
@@ -430,7 +447,9 @@ def test_the_transform_passes_the_whole_tokenizer_output_through():
 
     transform = build_tokenizing_transform(_WithMask(), "text", 8, True)
     out = transform({"text": ["abc", "de"]})
-    assert sorted(out) == ["attention_mask", "input_ids"]
+    assert sorted(out) == ["attention_mask", "input_ids", "labels"]
+    assert out["labels"] == out["input_ids"]
+    assert out["labels"][0] is not out["input_ids"][0]
 
 
 def test_the_view_is_immutable_and_leaves_the_original_alone():
@@ -460,7 +479,7 @@ def test_the_view_yields_the_same_row_count_and_order():
         add_special_tokens = True,
     )
     assert len(view) == len(dataset)
-    assert view[5]["input_ids"] == _Tokenizer()(["row 5"], max_length = 8)["input_ids"][0]
+    assert view[5]["input_ids"] == _Tokenizer()(["row 5</s>"], max_length = 8)["input_ids"][0]
 
 
 def test_the_view_attests_its_truncation_width():
@@ -491,17 +510,17 @@ def test_the_transformed_view_still_reports_its_backing_columns():
     assert "input_ids" not in dataset_column_names(view)
 
 
-# ------------------------------------------------------- the double-BOS rule
+# ------------------------------------------------------- native TRL specials
 
 
-def test_add_special_tokens_is_off_when_the_template_emits_a_bos():
+def test_native_special_tokens_stay_on_when_the_template_emits_a_bos():
     tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "<s>{{ x }}")
-    assert resolve_add_special_tokens(tokenizer, "hello") is False
+    assert resolve_add_special_tokens(tokenizer, "hello") is True
 
 
-def test_add_special_tokens_is_off_when_the_text_already_starts_with_bos():
+def test_native_special_tokens_stay_on_when_the_text_already_starts_with_bos():
     tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "{{ x }}")
-    assert resolve_add_special_tokens(tokenizer, "<s>hello") is False
+    assert resolve_add_special_tokens(tokenizer, "<s>hello") is True
 
 
 def test_add_special_tokens_stays_on_otherwise():

@@ -5452,7 +5452,13 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
-    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.trainer import (
+        _build_report_targets,
+        _configure_tensorboard_callback,
+        _drop_hf_stdout_callbacks,
+        _hf_stdout_progress_disabled,
+        _hf_warmup_ratio,
+    )
 
     training_args_kwargs = {
         "output_dir": output_dir,
@@ -5462,7 +5468,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "fp16": not is_bfloat16_supported(),
         "bf16": is_bfloat16_supported(),
         "logging_steps": 1,
-        "report_to": ["wandb"] if config.get("enable_wandb") else "none",
+        "report_to": _build_report_targets(config),
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
         "batch_sampler": BatchSamplers.NO_DUPLICATES,
         "optim": config.get("optim", "adamw_8bit"),
@@ -5481,7 +5487,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # warmup: prefer warmup_ratio (standard for embedding scripts), else steps
     if warmup_ratio is not None and warmup_ratio > 0:
-        training_args_kwargs["warmup_ratio"] = warmup_ratio
+        training_args_kwargs["warmup_steps"] = _hf_warmup_ratio(warmup_ratio)
     elif warmup_steps_val is not None and warmup_steps_val > 0:
         training_args_kwargs["warmup_steps"] = warmup_steps_val
 
@@ -5521,6 +5527,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         # disable_tqdm only swaps ProgressCallback for PrinterCallback, which prints a
         # raw dict per step instead; both write to the same stdout.
         _drop_hf_stdout_callbacks(trainer)
+        _configure_tensorboard_callback(trainer, config)
 
         trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:

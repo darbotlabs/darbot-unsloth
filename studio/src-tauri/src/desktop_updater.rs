@@ -218,6 +218,9 @@ pub(crate) async fn check_desktop_update(
     webview: tauri::Webview,
     state: tauri::State<'_, DesktopUpdateState>,
 ) -> Result<Option<DesktopUpdateMetadata>, String> {
+    if !crate::desktop_update_policy::updater_configured(webview.app_handle()) {
+        return Ok(None);
+    }
     let app = webview.app_handle().clone();
     let builder = webview.updater_builder().on_before_exit(move || {
         #[cfg(windows)]

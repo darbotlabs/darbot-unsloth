@@ -3,7 +3,7 @@
 # Unsloth Studio Installer
 #
 # Usage, supported options and the web one-liner are documented in the repository README under
-# "Unsloth Studio (web UI)": https://github.com/unslothai/unsloth#unsloth-studio-web-ui.
+# "Unsloth Studio (web UI)": https://github.com/darbotlabs/darbot-unsloth#unsloth-studio-web-ui.
 # They are not repeated here: this file ships inside the Linux desktop bundle, where a header
 # rehearsing download-and-run command lines is the first thing a generic script classifier reads,
 # and nothing in the script consults it.
@@ -446,7 +446,7 @@ if [ "$_next_is_package" = true ]; then
     exit 1
 fi
 if [ "$_next_is_python" = true ]; then
-    echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    echo "❌ ERROR: --python requires a version argument (e.g. --python 3.14.7)." >&2
     exit 1
 fi
 if [ "$_next_is_llama_cpp_dir" = true ]; then
@@ -465,6 +465,19 @@ case "$PACKAGE_NAME" in
 esac
 
 # ── Tauri structured output ──
+if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
+    if [ ! -f "$UNSLOTH_CI_SOURCE_OVERLAY/pyproject.toml" ] || [ ! -f "$UNSLOTH_CI_SOURCE_OVERLAY/studio/install_zoo.py" ]; then
+        echo "ERROR: UNSLOTH_CI_SOURCE_OVERLAY must identify a complete fork checkout." >&2
+        exit 1
+    fi
+    STUDIO_LOCAL_INSTALL=true
+fi
+if [ "$STUDIO_LOCAL_INSTALL" != true ] && [ "$_SHORTCUTS_ONLY" != true ]; then
+    echo "ERROR: this fork's Python 3.14 stack is source-only; no fork release artifact is assumed." >&2
+    echo "       Clone https://github.com/darbotlabs/darbot-unsloth and run bash install.sh --local." >&2
+    exit 1
+fi
+
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
         echo "[TAURI:$1] $2"
@@ -715,6 +728,29 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+if [ -n "${UNSLOTH_ENV_DIR:-}" ]; then
+    case "$UNSLOTH_ENV_DIR" in
+        /*) VENV_DIR="$UNSLOTH_ENV_DIR"
+            while [ "${VENV_DIR%/}" != "$VENV_DIR" ]; do VENV_DIR="${VENV_DIR%/}"; done ;;
+        *) echo "ERROR: UNSLOTH_ENV_DIR must be an absolute environment path." >&2; exit 1 ;;
+    esac
+    if [ -z "$VENV_DIR" ] || [ "$VENV_DIR" = "$HOME" ] || [ "$VENV_DIR" = "$STUDIO_HOME" ]; then
+        echo "ERROR: UNSLOTH_ENV_DIR must identify a dedicated virtual environment." >&2
+        exit 1
+    fi
+    if [ "$TAURI_MODE" = true ]; then
+        echo "ERROR: UNSLOTH_ENV_DIR is not supported with --tauri." >&2
+        exit 1
+    fi
+    if [ -L "$VENV_DIR" ] \
+       || { [ -e "$VENV_DIR" ] && [ ! -d "$VENV_DIR" ]; } \
+       || { [ -d "$VENV_DIR" ] && [ -n "$(ls -A "$VENV_DIR" 2>/dev/null)" ] \
+            && { [ ! -f "$VENV_DIR/pyvenv.cfg" ] || [ ! -f "$VENV_DIR/.unsloth-studio-owned" ]; }; }; then
+        echo "ERROR: refusing to replace UNSLOTH_ENV_DIR: expected a Studio-owned virtual environment or empty directory." >&2
+        exit 1
+    fi
+    export UNSLOTH_ENV_DIR="$VENV_DIR"
+fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
@@ -722,11 +758,14 @@ _VENV_ROLLBACK_ACTIVE=false
 _start_studio_venv_replacement() {
     _existing_dir="$1"
     _stamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo "time")
-    _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$"
+    _rollback_prefix="$STUDIO_HOME/unsloth_studio"
+    # Keep an external environment's rename on its own filesystem.
+    [ -z "${UNSLOTH_ENV_DIR:-}" ] || _rollback_prefix="$_existing_dir"
+    _candidate="$_rollback_prefix.rollback.$_stamp.$$"
     _suffix=0
     while [ -e "$_candidate" ] || [ -L "$_candidate" ]; do
         _suffix=$((_suffix + 1))
-        _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$.$_suffix"
+        _candidate="$_rollback_prefix.rollback.$_stamp.$$.$_suffix"
     done
     _VENV_ROLLBACK_DIR="$_candidate"
     _VENV_ROLLBACK_TARGET="$_existing_dir"
@@ -781,9 +820,9 @@ _dir_has_entries() {  # dir
 # rollback copy holds the user's real environment and $VENV_DIR is this run's own
 # work, so plain removal stays correct.
 _discard_venv_for_recreate() {  # venv dir
-    if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
-       && _start_studio_venv_replacement "$1"; then
-        return 0
+    if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ]; then
+        _start_studio_venv_replacement "$1"
+        return $?
     fi
     rm -rf "$1"
 }
@@ -859,14 +898,18 @@ _commit_studio_venv_replacement() {
         # Same shapes as the restore, or such a backup is never cleaned up.
         if [ -n "$_rollback_to_remove" ] \
            && { [ -e "$_rollback_to_remove" ] || [ -L "$_rollback_to_remove" ]; }; then
-            if ! rm -rf "$_rollback_to_remove"; then
+            if [ -n "${UNSLOTH_ENV_DIR:-}" ]; then
+                substep "previous external environment retained at $_rollback_to_remove"
+            elif ! rm -rf "$_rollback_to_remove"; then
                 echo "⚠️  Could not remove environment rollback $_rollback_to_remove" >&2
             fi
         fi
     fi
     # Only prune older orphaned copies after the replacement has succeeded, so
     # an interrupted install never discards the last known-good environment.
-    _prune_stale_studio_venv_rollbacks
+    if [ -z "${UNSLOTH_ENV_DIR:-}" ]; then
+        _prune_stale_studio_venv_rollbacks
+    fi
 }
 
 _cleanup_install_temporaries() {
@@ -2053,10 +2096,8 @@ fi
 if [ -n "$_USER_PYTHON" ]; then
     PYTHON_VERSION="$_USER_PYTHON"
     echo "  Using user-specified Python $PYTHON_VERSION (--python override)"
-elif [ "$MAC_INTEL" = true ]; then
-    PYTHON_VERSION="3.12"
 else
-    PYTHON_VERSION="3.13"
+    PYTHON_VERSION="3.14.7"
 fi
 
 if [ "$MAC_INTEL" = true ]; then
@@ -2304,22 +2345,10 @@ _has_working_git() {
 #
 # The consumer install needs no developer toolchain: uv is a prebuilt binary, CPython
 # is uv-managed, llama.cpp/whisper.cpp/Node are prebuilt downloads, and triton is
-# skipped on macOS. Only `--local` needs git, for the unsloth-zoo git+https URL.
+# skipped on macOS. Local Core and the vendored Zoo companion need no Git clone.
 _check_macos_deps() {
     _clt_missing=false
     xcode-select -p >/dev/null 2>&1 || _clt_missing=true
-
-    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
-        echo ""
-        step "deps" "git is required for --local installs" "$C_ERR"
-        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
-        substep "which needs a working git. Install the Xcode Command Line Tools:"
-        substep "  xcode-select --install"
-        substep "Then re-run this script. A normal (non---local) install needs no compiler"
-        substep "and no git -- it uses prebuilt binaries and wheels only."
-        tauri_log "NEED_XCODE_CLT" "git"
-        return 1
-    fi
 
     if [ "$_clt_missing" = true ]; then
         # Not fatal, and no GUI dialog: firing xcode-select --install and exiting is
@@ -2344,15 +2373,14 @@ _check_macos_deps() {
 # solely for a llama.cpp source build the consumer path never does -- unslothai/
 # llama.cpp publishes linux-x64/arm64 prebuilts for cpu, cuda12, cuda13, rocm and
 # vulkan. Requiring them turned every non-apt distro into a hard exit 1 over unused
-# tooling. git follows macOS: --local only.
+# tooling. Git is only needed for an actual optional source build.
 _check_linux_deps() {
     _transport_missing=false
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         _transport_missing=true
     fi
 
-    # Wanted, never required: git fetches the triton_kernels git+https requirement (a
-    # training speedup), the rest serve the optional source build. Warn, never stop.
+    # Optional source-build tools: warn, never block local Core/Zoo installation.
     _optional_missing=""
     command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
     _has_working_git                       || _optional_missing="$_optional_missing git"
@@ -2361,15 +2389,6 @@ _check_linux_deps() {
     # Parameter expansion, not `sed`: sed may be absent on a minimal image, and a
     # failed `$(... | sed ...)` yields "" -- "all found" on a machine that has none.
     _optional_missing="${_optional_missing# }"
-
-    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
-        echo ""
-        step "deps" "git is required for --local installs" "$C_ERR"
-        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
-        substep "which needs git. Install it with your package manager, then re-run."
-        substep "A normal (non---local) install needs no git and no compiler."
-        return 1
-    fi
 
     # The one fatal case: nothing can be downloaded. apt is the only distro family we
     # can drive unattended.
@@ -2431,10 +2450,8 @@ esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-# 0.9.3 is the first uv whose managed-Python manifest carries CPython 3.13.9.
-# Anything older tops out at 3.13.8, which cannot import torch (see PYTHON_SKIP),
-# so a bare "3.13" request on an older uv resolves straight to the broken patch.
-UV_MIN_VERSION="0.9.3"
+# Use the current stable managed-Python manifest for CPython 3.14.7.
+UV_MIN_VERSION="0.12.10"
 # The floor before this raised it. An offline host may keep a uv between the two,
 # since those installs worked without touching the network; below it the
 # installer rejected the uv outright and still has to, or it proceeds on a uv
@@ -2566,7 +2583,7 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
 #
 # Only the four mainstream targets are pinned. musl, armv7 and the rest fall through to
 # the caller's existing path rather than risk a wrong triple.
-UV_PINNED_VERSION="0.12.1"
+UV_PINNED_VERSION="0.12.10"
 
 # Echoes the glibc minor version (the N in 2.N), or nothing when this is not a glibc host or
 # the version cannot be read. "not musl" is not the same as "a glibc new enough to run the GNU
@@ -2604,10 +2621,10 @@ _uv_pinned_asset() {
             case "$_upa_arch" in
                 x86_64|amd64)
                     [ "$_upa_glibc" -ge 17 ] 2>/dev/null || return 1
-                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 173d95a0c32d18c896c46ba6fafbf3cf9c14ab74b033f81b76c883ef492a976b" ;;
                 aarch64|arm64)
                     [ "$_upa_glibc" -ge 28 ] 2>/dev/null || return 1
-                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 9ff6b9d4665edcdd3a88dcc73cd1eb641754deb927f14e8c62ebfde6bf4f5f5e" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2620,9 +2637,9 @@ _uv_pinned_asset() {
             fi
             case "$_upa_arch" in
                 x86_64)
-                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                    echo "uv-x86_64-apple-darwin.tar.gz 5296d5aa2b9143360405eea866f8ef4d5dc8986b164eb0dc35e8f876a9304d30" ;;
                 arm64|aarch64)
-                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                    echo "uv-aarch64-apple-darwin.tar.gz 51c6170e8e3a01cef9f33b94f582b7b81ac65046f55d40afb35f9cff5a68c179" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2920,15 +2937,6 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
     fi
 fi
 
-if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
-    _PY_MM=$("$VENV_DIR/bin/python" -c \
-        "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
-    if [ "$_PY_MM" != "3.12" ]; then
-        echo "  Recreating Intel Mac environment with Python 3.12 (was $_PY_MM)..."
-        rm -rf "$VENV_DIR"
-    fi
-fi
-
 # uv unconditionally invokes install_name_tool after downloading managed CPython on
 # macOS. On a consumer Mac without developer tools, Apple's /usr/bin shim opens the
 # Command Line Tools installer even though uv treats patch failure as a warning. There
@@ -3129,9 +3137,9 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
 
     if _python_is_skipped "$_PY_VER"; then
         echo "  WARNING: Python $_PY_VER cannot import torch."
-        echo "  Recreating venv with Python 3.12..."
+        echo "  Recreating venv with Python 3.14.7..."
         _discard_venv_for_recreate "$VENV_DIR"
-        PYTHON_VERSION="3.12"
+        PYTHON_VERSION="3.14.7"
         _uv_venv_arm64 "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
@@ -3156,28 +3164,34 @@ if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
-if [ -x "$VENV_DIR/bin/python" ]; then
-    step "venv" "using environment"
-    substep "${VENV_DIR}"
-fi
+_python_meets_policy() {
+    "$1" -c 'import sys, sysconfig; sys.exit(0 if sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED") else 1)'
+}
 
-# Default range admits torch 2.11 (verified on cpu/cu126/cu128/cu130/rocm7.1+/mac arm64).
-# Bump all three ceilings when the next minor is validated; the curated ROCm floors below stay literal.
-_TORCH_CEILING="2.12.0"
-_TORCHVISION_CEILING="0.27.0"
-_TORCHAUDIO_CEILING="2.12.0"
-# Default torch constraint; tightened for Python 3.13+ on arm64 macOS (no cp313 wheels below 2.6).
-TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"
-if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _PY_MINOR=$("$VENV_DIR/bin/python" -c \
-        "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
-    if [ "$_PY_MINOR" -ge 13 ] 2>/dev/null; then
-        TORCH_CONSTRAINT="torch>=2.6,<${_TORCH_CEILING}"
+# The same policy applies to paths, managed interpreters, existing environments
+# and --no-torch. Never fall back to an older minor or a free-threaded build.
+if ! _python_meets_policy "$VENV_DIR/bin/python"; then
+    if [ -n "$_USER_PYTHON" ]; then
+        echo "ERROR: this fork requires standard CPython >=3.14.7,<3.15 (not free-threaded)." >&2
+        exit 1
     fi
+    substep "recreating environment for standard CPython 3.14.7..."
+    _discard_venv_for_recreate "$VENV_DIR"
+    PYTHON_VERSION="3.14.7"
+    _uv_venv_requested "recreate venv (Python policy)"
+    if ! _python_meets_policy "$VENV_DIR/bin/python"; then
+        echo "ERROR: uv did not provide standard CPython >=3.14.7,<3.15." >&2
+        exit 1
+    fi
+    : > "$VENV_DIR/.unsloth-studio-owned"
 fi
-# Companions bounded to torch's window: torchaudio 2.11 dropped its torch pin, so it can drift.
-TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
-TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
+step "venv" "using environment"
+substep "${VENV_DIR}"
+
+TORCH_CONSTRAINT="torch==2.14.0"
+TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+# TorchAudio has an independent release cadence; 2.14 is not published.
+TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -3190,6 +3204,12 @@ case "$0" in
     */install.sh|install.sh)
         [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
+
+# An explicit CI source root also works for pipe-delivery tests without git.
+if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
+    _REPO_ROOT="$(CDPATH= cd -- "$UNSLOTH_CI_SOURCE_OVERLAY" && pwd)"
+    _REPO_IS_CHECKOUT=1
+fi
 
 # Honor UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker
 # publish workflow forwards one ref to both builds). Unset means main.
@@ -3946,6 +3966,9 @@ get_torch_index_url() {
         echo "[WARN] Version sources checked: amd-smi, /opt/rocm/.info/version, hipconfig, dpkg, rpm (Debian runtime package: libhsa-runtime64-1)." >&2
         echo "$_base/cpu"; return
     fi
+    if [ "${SKIP_TORCH:-false}" = true ]; then
+        echo "$_base/cpu"; return
+    fi
     # CUDA version from nvidia-smi: accept "CUDA Version:" and the newer "CUDA UMD Version:".
     _cuda_ver=$(export LC_ALL=C; _run_bounded "$_smi" 2>/dev/null \
         | sed -n \
@@ -3953,18 +3976,16 @@ get_torch_index_url() {
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
     if [ -z "$_cuda_ver" ]; then
-        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-        echo "$_base/cu126"; return
+        echo "[WARN] Could not determine CUDA version from nvidia-smi; cu130 requires a CUDA 13-compatible driver." >&2
+        echo "$_base/cu130"; return
     fi
     _major=${_cuda_ver%%.*}
-    _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then _cuda_tag=cu130
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then _cuda_tag=cu128
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then _cuda_tag=cu126
-    elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
-    elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
-    else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
+    if [ "$_major" -lt 13 ]; then
+        echo "ERROR: this fork's Torch 2.14 cu130 stack requires a CUDA 13-compatible NVIDIA driver; detected CUDA $_cuda_ver." >&2
+        echo "       Upgrade the NVIDIA driver, or explicitly set UNSLOTH_TORCH_INDEX_FAMILY=cpu or use --no-torch." >&2
+        return 1
+    fi
+    echo "$_base/cu130"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -4018,6 +4039,10 @@ _is_pip_rocm_family_leaf() {
 _torch_release_in_window() {
     _trw_con="$2"
     case "$_trw_con" in
+        "torch=="*)
+            if [ "${1%%+*}" = "${_trw_con#torch==}" ]; then echo "yes"; else echo "no"; fi
+            return
+            ;;
         "torch>="*",<"*) ;;
         *) echo "no"; return ;;
     esac
@@ -4057,21 +4082,9 @@ _previous_torch_pin() {
 
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
-        # Pair companions with the kept torch minor (torchaudio no longer exact-pins torch).
-        _itdi_base="${_PREV_TORCH_PIN#torch==}"
-        _itdi_minor="${_itdi_base#*.}"
-        _itdi_minor="${_itdi_minor%%.*}"
-        _itdi_tv="torchvision"
-        _itdi_ta="torchaudio"
-        case "$_itdi_base" in
-            2.*)
-                _itdi_tv="torchvision==0.$((_itdi_minor + 15)).*"
-                _itdi_ta="torchaudio==2.${_itdi_minor}.*"
-                ;;
-        esac
-        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
             --default-index "$TORCH_INDEX_URL" "$@"; then
-            substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
+            substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- retrying the declared stack" "$C_WARN"
             TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
             _PREV_TORCH_PIN=""
             run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
@@ -4380,7 +4393,7 @@ _maybe_bootstrap_rocm_wsl() {
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
-        if download "https://raw.githubusercontent.com/unslothai/unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+        if download "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
         else
             substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
@@ -4565,9 +4578,9 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     # Off the family, not the arch: no family straddles this boundary.
                     case "$_amd_family" in
                         gfx120X-all|gfx1151|gfx1150|gfx1152)
-                            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
-                            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
-                            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+                            TORCH_CONSTRAINT="torch==2.14.0"
+                            TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+                            TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
                             ;;
                     esac
                     echo "" >&2
@@ -4628,6 +4641,7 @@ fi
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    xpu)        export UNSLOTH_TORCH_BACKEND="xpu"  ;;
     cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
     # Unknown leaf: unset so a stale value cannot leak and the stack probes the GPU.
     *)          unset UNSLOTH_TORCH_BACKEND ;;
@@ -4658,20 +4672,19 @@ else
     _torch_index_is_rocm_family=false
 fi
 
-# rocm7.2 and per-gfx indexes ship torch 2.11.0: raise the floor, matching the FINAL leaf only.
+# Index selection never relaxes this fork's supported Torch release.
 case "$_torch_index_leaf" in
     rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
-        TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
-        TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
-        TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+        TORCH_CONSTRAINT="torch==2.14.0"
+        TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
         ;;
-    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
-    # device below it, so a mirror serving an older +xpu wheel would install something that
-    # cannot run. Reached only through an explicit pin (no Intel autodetect on this side).
+    # Native XPU uses the same Torch 2.14 policy. Reached through an explicit
+    # index pin; this POSIX path does not claim Intel GPU autodetection.
     xpu)
-        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
-        TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
-        TORCHAUDIO_CONSTRAINT="torchaudio>=2.6,<2.11.0"
+        TORCH_CONSTRAINT="torch==2.14.0"
+        TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
         ;;
 esac
 
@@ -4807,10 +4820,10 @@ case "$_torch_index_leaf" in
                 _amd_strix_base="${_amd_strix_base%/}"
             done
             TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
-            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            TORCH_CONSTRAINT="torch==2.14.0"
             # Pin companions to 2.11 (per-gfx index publishes them independently).
-            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
-            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+            TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
             _amd_gpu_radeon=false
             # Routing the wheels is only half of unslothai#7331: ROCr rebuilds the agent
             # from HSA_OVERRIDE_GFX_VERSION in every LATER process (and this shell execs
@@ -4874,15 +4887,44 @@ case "$_torch_index_leaf" in
                 _amd_gfx906_base="${_amd_gfx906_base%/}"
             done
             TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
-            # Cap below <2.12: a rocm7.2 pick floors at 2.11, which rocm6.3 (<= 2.9.x) cannot meet.
-            TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
-            TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
-            TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+            if [ "$SKIP_TORCH" = false ]; then
+                echo "ERROR: gfx906 requires a legacy Torch stack, unsupported by this Python 3.14 fork." >&2
+                echo "       Use --no-torch for GGUF tooling or restore your previous installation." >&2
+                exit 1
+            fi
             # (_amd_gpu_radeon already cleared above for every gfx906 target.)
         fi
         ;;
 esac
 fi  # _torch_index_pinned guard (Radeon + Strix reroute)
+# CUDA 13 is the supported wheel family. Do not silently downgrade for older
+# drivers/GPUs, nor reuse legacy Radeon wheel links with a different Python ABI.
+if [ "$SKIP_TORCH" = false ]; then
+    _policy_index_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+    _policy_leaf=$(_torch_index_url_leaf "$TORCH_INDEX_URL")
+    case "$_policy_leaf" in
+        cu130) ;;
+        cu[0-9]*)
+            if [ "$_torch_index_pinned" = true ]; then
+                echo "ERROR: this fork requires Torch 2.14 CUDA 13.0 (cu130), not $_policy_leaf." >&2
+                exit 1
+            fi
+            TORCH_INDEX_URL="${_policy_index_base%/}/cu130"
+            ;;
+        rocm7.2|xpu)
+            substep "Torch 2.14 wheels are required; no legacy backend fallback is permitted." "$C_WARN"
+            ;;
+        rocm*|gfx*)
+            if [ "$_torch_index_pinned" = true ]; then
+                echo "ERROR: this fork's verified Torch 2.14 ROCm wheel family is rocm7.2, not $_policy_leaf." >&2
+                exit 1
+            fi
+            TORCH_INDEX_URL="${_policy_index_base%/}/rocm7.2"
+            substep "using Torch 2.14 / ROCm 7.2; GPU and driver compatibility still require qualification." "$C_WARN"
+            ;;
+    esac
+    _amd_gpu_radeon=false
+fi
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
@@ -5205,7 +5247,7 @@ case "$TORCH_INDEX_URL" in
                 fi
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
-            substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
+            substep "  cd <your darbot-unsloth checkout> && bash install.sh --local --no-torch"
         fi
         ;;
     */rocm*|*/gfx*)
@@ -5220,6 +5262,26 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+
+_install_fork_source() {
+    if [ "$_REPO_IS_CHECKOUT" != 1 ] || [ ! -f "$_REPO_ROOT/studio/install_zoo.py" ]; then
+        echo "ERROR: this fork's Python 3.14 stack requires a source checkout." >&2
+        echo "       Clone darbotlabs/darbot-unsloth and run bash install.sh --local." >&2
+        return 1
+    fi
+    if [ "$SKIP_TORCH" = true ]; then
+        # Zoo requires Torch; defer it rather than install broken dependency metadata.
+        run_install_cmd_retry "install local Core (no-torch)" uv pip install \
+            --python "$_VENV_PY" -e "${_REPO_ROOT}[studio]" \
+            -r "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" \
+            --constraint "$_REPO_ROOT/studio/backend/requirements/no-torch-constraints.txt"
+    else
+        run_install_cmd_retry "install vendored Zoo" \
+            "$_VENV_PY" "$_REPO_ROOT/studio/install_zoo.py" --python "$_VENV_PY"
+        run_install_cmd_retry "install local Core" uv pip install --python "$_VENV_PY" \
+            -e "$_REPO_ROOT" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT"
+    fi
+}
 
 # A piped/standalone install.sh has no sibling requirements tree. Bootstrap only
 # the Unsloth wheel so its canonical Darwin override becomes available before
@@ -5339,7 +5401,12 @@ if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
 fi
 _unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.2}"
 
-if [ "$_MIGRATED" = true ]; then
+if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ "$_MIGRATED" = true ]; then
+    if [ "$SKIP_TORCH" = false ]; then
+        _install_torch_default_index
+    fi
+    _install_fork_source
+elif [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
     _gfx906_bnb_snapshot
     substep "upgrading unsloth in migrated environment..."
@@ -5552,7 +5619,9 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     _build_unsloth_torch_overrides
-    if [ "$SKIP_TORCH" = true ]; then
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        _install_fork_source
+    elif [ "$SKIP_TORCH" = true ]; then
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
             "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
@@ -5605,13 +5674,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.1" "$_unsloth_release_install_spec" --torch-backend=auto
-        substep "overlaying local repo (editable)..."
-        run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
-        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
-            --no-deps --reinstall-package unsloth-zoo \
-            "$_ZOO_GIT_SPEC"
+        _install_fork_source
     else
         case "$PACKAGE_NAME" in
             unsloth)
@@ -5703,28 +5766,14 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
 fi
 
-# ── CI only: overlay a source checkout over the package just installed ──
-# Not a consumer knob: no flag, absent from --help, ignored unless
-# UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.
-#
-# The clean-machine legs run THIS script from a branch but install unsloth from PyPI,
-# the consumer path, so everything Python-side (studio/setup.sh, setup.ps1,
-# install_python_stack.py and every requirements/constraints file they reach via
-# Path(__file__)) would be the released wheel's and a branch could not be validated. An
-# editable overlay re-points `import studio` at the working tree, so the
-# importlib.resources lookup below finds this ref's setup.sh. NOT --local: that also
-# installs `unsloth-zoo @ git+https://...`, which genuinely needs the git these legs
-# remove; editable + --no-deps resolves and clones nothing, so it survives git, cmake
-# and the C/C++ compilers all being gone.
+# CI source selection happened before dependency resolution. Retain the marker
+# consumed by workflow assertions, without a redundant second editable install.
 if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
-    if [ ! -f "$UNSLOTH_CI_SOURCE_OVERLAY/pyproject.toml" ]; then
-        echo "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$UNSLOTH_CI_SOURCE_OVERLAY' but there is no pyproject.toml there." >&2
+    if [ "$STUDIO_LOCAL_INSTALL" != true ] || [ "$_REPO_ROOT" != "$UNSLOTH_CI_SOURCE_OVERLAY" ]; then
+        echo "[ERROR] CI source checkout was not selected before dependency resolution." >&2
         exit 1
     fi
-    substep "CI: overlaying source checkout (editable, no deps): $UNSLOTH_CI_SOURCE_OVERLAY"
-    # Retry: the editable build fetches its backend from PyPI, same network risk.
-    run_install_cmd_retry "overlay CI source checkout" uv pip install --python "$_VENV_PY" \
-        --no-deps -e "$UNSLOTH_CI_SOURCE_OVERLAY"
+    substep "CI: overlaying source checkout (selected before dependency resolution): $UNSLOTH_CI_SOURCE_OVERLAY"
 fi
 
 # ── Run studio setup ──
@@ -5794,6 +5843,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_PACKAGE_NAME="$PACKAGE_NAME" \
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
+    UNSLOTH_CORE_TRACKING_REF=pinned \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     UNSLOTH_TAURI_MODE="$TAURI_MODE" \
@@ -5813,7 +5863,13 @@ else
 fi
 
 if [ "$_SETUP_EXIT" -eq 0 ]; then
-    # First: until this runs, anything that fails below reaches the exit trap, which would
+    if [ -n "${UNSLOTH_ENV_DIR:-}" ]; then
+        # The CLI can recover this dedicated environment from sys.prefix in a
+        # new shell, where the install-time UNSLOTH_ENV_DIR is no longer set.
+        : > "$VENV_DIR/.unsloth-studio-owned"
+        printf '%s\n' "$STUDIO_HOME" > "$VENV_DIR/.unsloth-studio-home"
+    fi
+    # Until this runs, a failure reaches the exit trap, which would
     # restore the previous environment over the one just installed.
     _commit_studio_venv_replacement
     tauri_clear_install_error "studio setup completed"
@@ -6077,8 +6133,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
                 echo "   Your migrated environment may be incompatible."
                 echo "   To fix, remove the environment and reinstall:"
                 echo ""
-                echo "   rm -rf $VENV_DIR"
-                echo "   curl -fsSL https://unsloth.ai/install.sh | sh"
+                echo "   Restore your retained environment backup, or rerun from your fork checkout:"
+                echo "   bash install.sh --local"
                 echo ""
             fi
             exit "$_LAUNCH_EXIT"

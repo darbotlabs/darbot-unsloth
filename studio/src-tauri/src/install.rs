@@ -531,6 +531,23 @@ fn emit_complete(app: &AppHandle) {
 
 // ── Spawn ──
 
+fn require_default_install_environment() -> Result<(), String> {
+    if crate::process::managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR"))?.is_some() {
+        return Err("UNSLOTH_ENV_DIR selects an existing environment. Rebuild that same path with the root installer instead of the desktop default-root installer.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn explicit_environment_cannot_invoke_the_default_root_installer() {
+    crate::studio_paths::with_explicit_test_environment(|_, _| {
+        assert!(require_default_install_environment().unwrap_err().contains("same path"));
+        std::env::set_var("UNSLOTH_ENV_DIR", "relative");
+        assert!(require_default_install_environment().is_err());
+    });
+}
+
 /// Spawns the install script in a process group.
 /// Returns (stdout, stderr) handles for streaming.
 /// The GroupChild is stored in state so stop_install() can kill the entire tree.
@@ -545,6 +562,7 @@ fn spawn_script(
     ),
     String,
 > {
+    require_default_install_environment()?;
     let mut install = state.lock().map_err(|e| e.to_string())?;
     if install.child.is_some() {
         return Err("Installation is already running.".to_string());
@@ -845,6 +863,7 @@ fn run_install_with_event_mode(
     event_mode: InstallEventMode,
     repair_group_id: Option<String>,
 ) -> Result<(), String> {
+    require_default_install_environment()?;
     let attempt = match repair_group_id.as_deref() {
         Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
         None => diagnostics::begin_install_attempt(&diagnostics),

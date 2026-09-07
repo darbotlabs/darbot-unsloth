@@ -28,7 +28,7 @@ import {
   Database02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { DataTableColumnDef as ColumnDef } from "@/components/ui/data-table-model";
 import {
   type ReactNode,
   useCallback,
@@ -459,8 +459,8 @@ export function DatasetPreviewDialog({
             )}
           </div>
         ),
-        cell: ({ getValue }: { getValue: () => unknown }) => {
-          const value = getValue();
+        cell: (context) => {
+          const value = context.cell.getValue();
           const images = collectPreviewImages(value);
           if (images.length > 0) {
             return (

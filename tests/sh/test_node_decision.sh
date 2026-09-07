@@ -1,7 +1,7 @@
 #!/bin/bash
 # Unit tests for decide_node_source() from studio/setup.sh.
 # Slices the pure function out of setup.sh and exercises the three outcomes:
-#   system  -- system Node + npm already satisfy Vite 8 (^20.19/22.12/>=23) + npm>=11
+#   system  -- Node ^22.13 or >=24 and npm>=11.10 satisfy the frontend toolchain
 #   bundled -- otherwise install an isolated Node (the Discord-reported npm-only case)
 #   skip    -- UNSLOTH_SKIP_NODE_INSTALL=1 and the system is unsuitable
 set -e
@@ -35,9 +35,15 @@ assert_decision() {
 echo "decide_node_source"
 # system: both satisfy
 assert_decision "node22 + npm11"      "v22.17.1" "11.13.0" "0" system
-assert_decision "node20.19 + npm11"   "v20.19.0" "11.0.0"  "0" system
+assert_decision "former node20 floor is no longer supported" "v20.19.0" "11.0.0" "0" bundled
 assert_decision "node24 + npm11"      "v24.17.0" "11.13.0" "0" system
-assert_decision "node23 + npm11"      "v23.5.0"  "11.0.0"  "0" system
+assert_decision "former node23 allowance is no longer supported" "v23.5.0" "11.0.0" "0" bundled
+assert_decision "exact current floors" "v22.13.0" "11.10.0" "0" system
+assert_decision "verified Node and bundled npm" "v26.8.1" "11.19.0" "0" system
+assert_decision "newer npm major" "v26.8.1" "12.0.0" "0" system
+assert_decision "npm just below floor" "v26.8.1" "11.9.9" "0" bundled
+assert_decision "node just below floor" "v22.12.0" "11.10.0" "0" bundled
+assert_decision "unsupported node23 with current npm" "v23.5.0" "11.10.0" "0" bundled
 
 # bundled: the reported bug -- fine Node, stale npm
 assert_decision "node22 + npm10 (bug)" "v22.17.1" "10.9.2" "0" bundled

@@ -1,32 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: after the training worker runs its preflight and then activates the transformers
-sidecar, the in-process ``transformers`` must be the sidecar version the model requires -- not the
-default 4.57.x that the base environment ships.
+"""Worker preflight must not preload Transformers before selecting its installation.
 
-The CPU-only "does it choose the correct transformers version" guard, stronger than the pure
-import-order check in ``test_training_worker_import_discipline.py``: it runs the REAL tier detection
-(``get_transformers_tier``) and REAL activation (``activate_transformers_for_subprocess``) for a
-transformers-5.x model (Qwen3.5, tier 530) and asserts the version actually switched. It catches the
-whole failure family at once:
-
-  * a stale pre-activation ``transformers`` import (the #6951 / ``TokenizersBackend`` regression: an
-    already-cached 4.57.x defeats the sidecar's ``sys.path`` prepend),
-  * a wrong tier selected for a 5.x model, and
-  * activation not actually swapping the resident module.
-
-Why the CUDA spoof matters (verified): ``unsloth_zoo``'s eager ``import transformers`` only happens on
-its full, GPU-present init path. On a GPU-less runner it silently degrades and never preloads
-transformers -- which would MASK the stale-import bug (the check would falsely pass). Spoofing
-``torch.cuda`` so ``unsloth_zoo`` believes a GPU is present forces the real init path, exposing the
-regression on CPU CI. The spoof mirrors ``tests/_zoo_aggressive_cuda_spoof.py`` but is inlined so the
-test is self-contained in the ``studio-backend-ci`` matrix (whose conftest does not apply the shared
-spoof). No GPU/network/weights/real sidecar needed: a one-line stub sidecar stands in for the 5.x venv,
-so we only assert activation lands on it.
-
-Proven: passes on the fixed tree (active == 5.3.0) and fails on the buggy tree (active == 4.57.x) on
-a simulated GPU-less runner.
+Real tier detection and activation run in a fresh process with minimal package
+stubs. The supported 5.16.1 base needs no fixed shadow; an older base must use the
+5.16.1 fallback. GPU spoofing exposes the historical eager Zoo import (#6951)
+even on CPU CI. No models, weights, or real sidecar installation are required.
 """
 
 from __future__ import annotations
@@ -34,6 +14,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
 # Canonical CUDA spoof at the repo root (studio/backend -> studio -> repo root). Loaded by the
@@ -42,7 +23,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
 _SPOOF_PATH = _BACKEND_DIR.parent.parent / "tests" / "_zoo_aggressive_cuda_spoof.py"
 
 # Runs in a fresh interpreter with cwd == studio/backend so ``utils.*`` resolves like the worker.
-# STUB_HOME (a pytest tmp dir) holds a throwaway ``.venv_t5_530`` sidecar exporting transformers 5.3.0.
+# STUB_HOME holds an old or supported base plus the supported fixed-tier shadow.
 _SNIPPET = r"""
 import os, sys
 sys.path.insert(0, os.getcwd())
@@ -87,7 +68,7 @@ home = os.environ["STUB_HOME"]
 pkg = os.path.join(home, ".venv_t5_530", "transformers")
 os.makedirs(pkg, exist_ok = True)
 with open(os.path.join(pkg, "__init__.py"), "w") as f:
-    f.write('__version__ = "5.3.0"\n')
+    f.write('__version__ = "5.16.1"\n')
 os.environ["UNSLOTH_STUDIO_HOME"] = home
 
 # Faithful worker preflight (worker.py: from utils.hf_xet_fallback import child_should_disable_xet).
@@ -98,15 +79,33 @@ child_should_disable_xet({})
 _tf = sys.modules.get("transformers")
 preload = _tf.__version__ if _tf is not None else None
 
+base = os.path.join(home, "base")
+base_version = os.environ["BASE_TRANSFORMERS_VERSION"]
+base_pkg = os.path.join(base, "transformers")
+os.makedirs(base_pkg, exist_ok = True)
+with open(os.path.join(base_pkg, "__init__.py"), "w") as f:
+    f.write(f'__version__ = "{base_version}"\n')
+dist_info = os.path.join(base, f"transformers-{base_version}.dist-info")
+os.makedirs(dist_info, exist_ok = True)
+with open(os.path.join(dist_info, "METADATA"), "w") as f:
+    f.write(f"Name: transformers\nVersion: {base_version}\n")
+sys.path.insert(0, base)
+
 # Real tier detection + real activation, with the 530 sidecar pointed at the stub above.
 import utils.transformers_version as tv
+tv.sysconfig.get_path = lambda name: base
 tv._VENV_T5_530_DIR = os.path.join(home, ".venv_t5_530")
 tv._ensure_venv_t5_530_exists = lambda: True
 tier = tv.get_transformers_tier("Qwen/Qwen3.5-9B", None)
 tv.activate_transformers_for_subprocess("Qwen/Qwen3.5-9B", None)
 
 import transformers
-print(f"RESULT tier={tier} preload={preload} active={transformers.__version__}")
+source = (
+    "sidecar" if transformers.__file__.startswith(pkg)
+    else "base" if transformers.__file__.startswith(base_pkg)
+    else "unexpected"
+)
+print(f"RESULT tier={tier} preload={preload} active={transformers.__version__} source={source}")
 """
 
 
@@ -117,16 +116,17 @@ def _parse(stdout: str) -> dict[str, str]:
     return {}
 
 
-def test_worker_activates_correct_transformers_version(tmp_path):
-    """The worker's real preflight + activation for a transformers-5.x model (Qwen3.5, tier 530) must
-    leave the in-process ``transformers`` on the 5.x sidecar. A stale pre-activation import leaves the
-    default 4.57.x pinned and fails this assertion -- exactly the #6951 ``TokenizersBackend`` regression."""
+@pytest.mark.parametrize(
+    ("base_version", "expected_source"), [("4.57.6", "sidecar"), ("5.16.1", "base")]
+)
+def test_worker_activates_correct_transformers_version(tmp_path, base_version, expected_source):
     result = subprocess.run(
         [sys.executable, "-c", _SNIPPET],
         cwd = str(_BACKEND_DIR),
         env = {
             **__import__("os").environ,
             "STUB_HOME": str(tmp_path),
+            "BASE_TRANSFORMERS_VERSION": base_version,
             **({"SPOOF_PATH": str(_SPOOF_PATH)} if _SPOOF_PATH.exists() else {}),
         },
         capture_output = True,
@@ -145,11 +145,6 @@ def test_worker_activates_correct_transformers_version(tmp_path):
         "Tier detection regressed."
     )
 
-    # Activation must actually swap the resident transformers to the sidecar version. If a preflight
-    # import cached 4.57.x first, the sidecar prepend is a no-op and this stays 4.57.x -- the bug.
-    assert parsed["active"] == "5.3.0", (
-        "Sidecar activation did NOT switch the in-process transformers to the model's 5.x version "
-        f"(active={parsed['active']}, preloaded-before-activation={parsed['preload']}). A pre-activation "
-        "transformers import (directly or via unsloth_zoo) defeated the sidecar; 5.x models (Qwen3.5, "
-        "GLM-4.7, gemma-4) then fail with 'Tokenizer class TokenizersBackend does not exist'. See #6951."
-    )
+    assert parsed["preload"] == "None", "Worker preflight imported Transformers before activation"
+    assert parsed["active"] == "5.16.1"
+    assert parsed["source"] == expected_source

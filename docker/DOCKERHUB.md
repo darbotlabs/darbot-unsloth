@@ -1,26 +1,54 @@
 # Unsloth Docker Image
 
-Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, xformers, TRL, PEFT), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp and whisper.cpp for GGUF work.
+Source builds for [darbotlabs/darbot-unsloth](https://github.com/darbotlabs/darbot-unsloth).
+No fork image is assumed published. Upstream `unsloth/unsloth` does not include
+this fork's changes. Both the base and Studio environment require standard
+CPython **3.14.7**, Torch **2.14.0+cu130**, Triton **3.8.0**, datasets **5.0.1**
+and scikit-learn **1.9.0**. TorchVision is 0.29.0; TorchAudio remains 2.11.0.
+The vendored Zoo companion is bootstrapped before local Core resolution.
+vLLM and xformers are not enabled by default; optional engines need separate
+validation and may not force a Torch downgrade or install prereleases.
+The current stable vLLM 0.28 release requires Torch 2.13, so it cannot be enabled
+under this image's Torch 2.14 policy. An explicit vLLM build fails rather than
+downgrading Torch or overriding dependency caps.
 
-Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in the main repository. Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install-and-update/docker).
+Source: [`docker/`](https://github.com/darbotlabs/darbot-unsloth/tree/main/docker).
+See the [fork platform policy](../README.md#this-forks-platform-policy).
 
 ## Tags
 
 | Tag | Contents | Use it for |
 |---|---|---|
-| `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
-| `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
-| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
-| `<version>`, `core-<version>` | Release builds | Pin a release. |
+| `darbot-unsloth:studio` | Local Studio + JupyterLab + notebooks + key-only SSH build | Browser workflows supported by the selected backend. |
+| `darbot-unsloth:core` | Local Core + JupyterLab + notebooks build | Notebooks and scripts. |
 
-`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+Publication is disabled unless the repository explicitly configures
+`UNSLOTH_DOCKER_PUBLISH`, `UNSLOTH_DOCKER_IMAGE`, and `UNSLOTH_DOCKER_USERNAME`.
+When enabled, the workflow maintains moving `core`/`studio` tags and immutable
+`core-nightly-<YYYY.MM.DD>` / `nightly-<YYYY.MM.DD>` pins in that configured
+namespace. This describes the publication contract, not existing fork images.
+
+Build from a fork ref containing this migration (the build fetches that ref;
+uncommitted local changes are not included):
+
+```bash
+UNSLOTH_REF=<fork-commit-sha> bash docker/build.sh
+docker build --build-arg BASE_IMAGE=darbot-unsloth:core \
+  --build-arg UNSLOTH_STUDIO_REF=<same-fork-commit-sha> \
+  -f docker/Dockerfile.studio -t darbot-unsloth:studio docker
+```
+
+Both Dockerfiles target `linux/amd64` and `linux/arm64`; each must resolve
+compatible wheels successfully. Studio verifies the exact Python ABI and Torch
+build against the base. CUDA libraries are deduplicated only when their contents
+match, never by linking a CUDA 13 library under a CUDA 12 SONAME.
 
 ## Quick start
 
-Needs an NVIDIA driver of 570.26 or newer and, on Linux, the NVIDIA Container Toolkit. One command installs the toolkit (Ubuntu, Debian, RHEL, Fedora, Rocky, Amazon Linux, SUSE) and checks a container can see the GPU:
+Needs a CUDA 13-capable NVIDIA driver (580 series or newer) and, on Linux, the NVIDIA Container Toolkit:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+sudo -E bash docker/install_nvidia_toolkit.sh
 ```
 
 On Windows use Docker Desktop with the WSL 2 backend and a current NVIDIA Windows driver; nothing else to install. Then:
@@ -33,7 +61,7 @@ docker run -d --gpus all --ipc=host \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
-  unsloth/unsloth
+  darbot-unsloth:studio
 ```
 
 `docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
@@ -41,8 +69,8 @@ docker run -d --gpus all --ipc=host \
 The `docker/run.sh` helper in the repository sets these flags for you:
 
 ```bash
-git clone https://github.com/unslothai/unsloth && cd unsloth
-UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
+git clone https://github.com/darbotlabs/darbot-unsloth unsloth && cd unsloth
+UNSLOTH_IMAGE=darbot-unsloth:studio UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
 ```
 
 ### Notebooks only (`core`)
@@ -52,17 +80,17 @@ The `core` image has no service manager. Start JupyterLab on the command line:
 ```bash
 docker run -d --gpus all --ipc=host -p 8888:8888 \
   -v "$PWD":/workspace/host \
-  unsloth/unsloth:core \
+  darbot-unsloth:core \
   jupyter lab --ip 0.0.0.0 --port 8888 --allow-root
 ```
 
-The login token is printed in `docker logs`. With no command the image runs `python`, so a bare `docker run unsloth/unsloth:core` exits immediately.
+The login token is printed in `docker logs`. With no command the image runs `python`, so a bare `docker run darbot-unsloth:core` exits immediately.
 
 ### Scripts
 
 ```bash
 docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
-  unsloth/unsloth:core python /workspace/host/train.py
+  darbot-unsloth:core python /workspace/host/train.py
 ```
 
 ### CPU-only hosts
@@ -70,7 +98,7 @@ docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
 Without a GPU the container refuses to start unless you opt in. Studio chat with GGUF models, JupyterLab and the GGUF tooling work; training does not.
 
 ```bash
-docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
+docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 darbot-unsloth:studio
 ```
 
 ## Supported GPUs
@@ -79,11 +107,19 @@ Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Amper
 
 Driver requirements:
 
-- 570.26 or newer for CUDA 12.8 on every GPU.
-- 580 or newer for B300, GB300 and GB10.
-- On `linux/arm64` the bundled llama.cpp is a CUDA 13 build because upstream ships no CUDA 12 build for that architecture. Training works from driver 570, but GGUF export and Studio chat need 580 or newer.
+- 580 series or newer for native CUDA 13 on every architecture.
 
-Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not supported by these images.
+**Turing (T1000/T4/RTX 20-series, sm_75) is not blanket-rejected.**
+Both physical T1000 GPUs passed offline tiny-Llama FP32 manual LoRA SFT and
+default 4-bit QLoRA on Windows with Python 3.14.7, Torch 2.14/cu130 and
+Triton-Windows 3.8.0.post28. The 4-bit path used seven genuinely packed CUDA
+`Linear4bit` layers and verified forward/backward plus optimizer adapter updates.
+FP32/4-bit adapter save/reload preserved weights and logits within precision
+tolerances; real TensorBoard roundtrips also passed.
+These demonstrated tiny-model paths do not certify this Linux image, every model,
+or every dtype. Published upstream Turing policy remains separate from these
+measurements. Native BF16 acceleration is unavailable on Turing. AMD GPUs are not
+supported by these NVIDIA images.
 
 ## Ports
 
@@ -124,7 +160,8 @@ The container runs as root by default. `--user <uid>:<gid>` is supported and kee
 
 On the `latest` image:
 
-- `unsloth-studio-update` upgrades Studio and Unsloth in place.
+- Rebuild matching base and Studio images to update this fork; the upstream
+  in-place PyPI updater is disabled to preserve the companion and CUDA ABI.
 - `unsloth-llama-update` fetches the newest prebuilt llama.cpp.
 - `unsloth-jupyter-tunnel` opens a Cloudflare quick tunnel to JupyterLab.
 

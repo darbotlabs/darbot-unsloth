@@ -524,8 +524,41 @@ def test_a_custom_package_installs_no_companion(monkeypatch):
     """The installer's own view has to agree with the scan's."""
     import install_python_stack as ips
 
+    monkeypatch.setattr(ips, "NO_TORCH", False)
     assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
     assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    assert ips._core_package_names("unsloth") == ("unsloth",)
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_no_torch_profile_needs_no_zoo_metadata_or_payload(
+    tmp_path, monkeypatch, site_packages, foreign,
+):
+    dist_info = _dist(site_packages, name = "unsloth")
+    size = _write(site_packages / "unsloth" / "__init__.py", "x = 1\n")
+    _record(dist_info, [["unsloth/__init__.py", "sha256=x", size]])
+    req_root = tmp_path / "requirements"
+    req_root.mkdir()
+    (req_root / install_manifest.BOOT_REQUIREMENT_FILE).write_text("", encoding = "utf-8")
+    monkeypatch.setattr(
+        install_manifest, "installed_versions",
+        lambda name: [VER] if name == "unsloth" else [],
+    )
+    install_manifest.write_manifest(
+        root = tmp_path, req_root = req_root, no_torch = True,
+    )
+    kwargs = {}
+    if foreign:
+        kwargs = {
+            "installed": {"unsloth": VER},
+            "installed_conflicts": ["unsloth-zoo"],
+            "scan_paths": [str(site_packages)],
+        }
+    state = install_manifest.verify_install(
+        root = tmp_path, req_root = req_root, deep = True, **kwargs,
+    )
+    assert state["ok"] is True
 
 
 def test_a_manifest_with_no_recorded_version_is_damage(tmp_path, monkeypatch, site_packages):

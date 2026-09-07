@@ -5,8 +5,6 @@
  *  active thread's in-memory repository still holds it, and any later repo-to-storage sync
  *  writes it back, undoing the deletion. */
 
-import forge from "node-forge";
-
 export type ChatAttachmentDeletedEvent = {
   messageId: string;
   attachmentId: string;
@@ -92,6 +90,7 @@ export async function chatContentPartAttachmentIdFromSignature(
     }
   }
   if (hex === null) {
+    const { default: forge } = await import("node-forge");
     const digest = forge.md.sha256.create();
     digest.update(signature, "utf8");
     hex = digest.digest().toHex();

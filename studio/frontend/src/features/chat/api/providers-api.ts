@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import forge from "node-forge";
+import type forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
@@ -118,6 +118,7 @@ async function importProviderPublicKey(
   if (!forceRefresh && cachedPublicKeyPem === publicKeyPem && cachedForgeKey) {
     return cachedForgeKey;
   }
+  const { default: forge } = await import("node-forge");
   const forgeKey = forge.pki.publicKeyFromPem(publicKeyPem);
   cachedPublicKeyPem = publicKeyPem;
   cachedForgeKey = forgeKey;
@@ -129,6 +130,7 @@ export async function encryptProviderApiKey(
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
+  const { default: forge } = await import("node-forge");
   const encrypted = key.encrypt(plaintextApiKey, "RSA-OAEP", {
     md: forge.md.sha256.create(),
     mgf1: { md: forge.md.sha256.create() },

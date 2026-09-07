@@ -5,9 +5,9 @@
 """Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
 Downloads an official Node.js archive from nodejs.org into an isolated
-``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
-npm >= 11) with the npm it bundles.
+``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. The committed
+stable release pin clears the frontend build floor (Node ^22.13 || >=24,
+npm >=11.10 for the minimum-release-age policy) with the npm it bundles.
 
 Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
 (committed in-tree), not a checksum re-fetched from the same origin as the archive.
@@ -53,9 +53,10 @@ EXIT_ERROR = 1
 EXIT_FALLBACK = 2
 EXIT_BUSY = 3
 
-# Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
+# The optional LTS/latest selectors use supported release lines, while the
+# default is the exact stable release frozen in the checksum manifest.
 NODE_MIN_LTS_MAJOR = 24
-NPM_MIN_MAJOR = 11
+NPM_MIN_VERSION = "11.10.0"
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
 NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
@@ -180,13 +181,17 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 
 def _meets_node_floor(version: str) -> bool:
-    """True iff version clears the setup floor (^20.19 || >=22.12 || >=23)."""
+    """Keep in sync with frontend/package.json engines (^22.13.0 || >=24.0.0)."""
     parts = _version_tuple(version)
     if not parts:
         return False
     major = parts[0]
     minor = parts[1] if len(parts) > 1 else 0
-    return (major == 20 and minor >= 19) or (major == 22 and minor >= 12) or major >= 23
+    return (major == 22 and minor >= 13) or major >= 24
+
+
+def _meets_npm_floor(version: str | None) -> bool:
+    return version is not None and _version_tuple(version) >= _version_tuple(NPM_MIN_VERSION)
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
@@ -643,13 +648,13 @@ def installed_node_version(install_dir: Path, host: HostInfo) -> str | None:
         return None
 
 
-def installed_npm_major(install_dir: Path, host: HostInfo) -> int | None:
+def installed_npm_version(install_dir: Path, host: HostInfo) -> str | None:
     cli = npm_cli_path(install_dir, host)
     if not cli.exists():
         return None
     try:
         out = _run_node(install_dir, host, [str(cli), "--version"], timeout = 60)
-        return _version_tuple(out)[0]
+        return out if _version_tuple(out) else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -697,18 +702,17 @@ def existing_install_matches(
         return False
     if installed_node_version(install_dir, host) != version:
         return False
-    npm_major = installed_npm_major(install_dir, host)
-    return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+    return _meets_node_floor(version) and _meets_npm_floor(installed_npm_version(install_dir, host))
 
 
 def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
-    """True iff the on-disk install runs and clears the npm floor, ignoring version."""
+    """True iff the on-disk install runs and clears both build floors."""
     if not load_metadata(install_dir):
         return False
-    if installed_node_version(install_dir, host) is None:
+    version = installed_node_version(install_dir, host)
+    if version is None or not _meets_node_floor(version):
         return False
-    npm_major = installed_npm_major(install_dir, host)
-    return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+    return _meets_npm_floor(installed_npm_version(install_dir, host))
 
 
 def _replace_with_retry(
@@ -766,13 +770,13 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
 
 
 def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
-    """Self-upgrade npm inside the isolated prefix if a pinned build ships npm < 11 (no-op on Node 24+)."""
-    npm_major = installed_npm_major(install_dir, host)
-    if npm_major is not None and npm_major >= NPM_MIN_MAJOR:
+    """Upgrade only the isolated prefix when its npm lacks the release-age policy."""
+    npm_version = installed_npm_version(install_dir, host)
+    if _meets_npm_floor(npm_version):
         return
-    log(f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix")
+    log(f"bundled npm {npm_version} below {NPM_MIN_VERSION}; upgrading npm inside the isolated prefix")
     cli = npm_cli_path(install_dir, host)
-    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
+    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_VERSION}"], timeout = 300)
 
 
 # ── Orchestration ──
@@ -797,11 +801,13 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
-        # Explicit version bypasses min_major; reject anything Vite/OXC cannot use.
-        if not _meets_node_floor(version):
-            raise PrebuiltFallback(
-                f"requested Node v{version} is below the floor (^20.19 || >=22.12 || >=23)"
-            )
+
+    # Neither an explicit version nor a lowered selector --min-major may bypass
+    # the frontend's build floor.
+    if not _meets_node_floor(version):
+        raise PrebuiltFallback(
+            f"requested Node v{version} is below the floor (^22.13.0 || >=24.0.0)"
+        )
 
     asset = node_asset_name(version, host)
     log(f"target Node v{version} ({asset})")
@@ -887,12 +893,12 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             raise
 
     final_version = installed_node_version(install_dir, host)
-    npm_major = installed_npm_major(install_dir, host)
-    if final_version != version or npm_major is None or npm_major < NPM_MIN_MAJOR:
+    npm_version = installed_npm_version(install_dir, host)
+    if final_version != version or not _meets_npm_floor(npm_version):
         raise PrebuiltFallback(
-            f"post-install verification failed: node={final_version} npm_major={npm_major}"
+            f"post-install verification failed: node={final_version} npm={npm_version}"
         )
-    log(f"installed isolated Node v{final_version} (npm {npm_major}.x) at {install_dir}")
+    log(f"installed isolated Node v{final_version} (npm {npm_version}) at {install_dir}")
     return EXIT_SUCCESS
 
 

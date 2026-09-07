@@ -117,8 +117,15 @@ fn first_argument(_pid: u32) -> Option<PathBuf> {
 pub(crate) fn interpreters_of(tree: &Path) -> TreeInterpreters {
     let mut shared: Vec<PathBuf> = Vec::new();
     let mut base_unknown = false;
-    for name in ["unsloth_studio", ".venv"] {
-        let venv = tree.join(name);
+    let mut environments = vec![tree.join("unsloth_studio"), tree.join(".venv")];
+    if let Ok(Some(environment)) =
+        crate::process::managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR"))
+    {
+        if !environments.contains(&environment) {
+            environments.push(environment);
+        }
+    }
+    for venv in environments {
         if !venv.is_dir() {
             continue;
         }

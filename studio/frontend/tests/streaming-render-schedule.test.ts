@@ -34,6 +34,7 @@ test("only Streamdown's animation transformer is removed", () => {
       rehypePlugin: animation,
       getLastRenderCharCount: () => 0,
       setPrevContentLength: () => undefined,
+      commit: () => undefined,
     }),
     [first, configured],
   );

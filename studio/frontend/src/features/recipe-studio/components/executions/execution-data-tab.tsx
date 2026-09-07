@@ -4,7 +4,7 @@
 import type { ReactElement } from "react";
 import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { DataTableColumnDef as ColumnDef } from "@/components/ui/data-table-model";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import {

@@ -67,22 +67,23 @@ test("the root match hands the hub's selection to every persistently mounted pag
   );
 });
 
-test("location.pathname reaches /images while the hub's search is still committed", async () => {
+test("pending navigation keeps the committed hub location and search together", async () => {
   const router = buildRouter();
   await settleOnHub(router);
 
   const navigation = router.navigate({ to: "/images" });
   await Promise.resolve();
 
-  // `active` is derived from this, so mid-navigation the Images page believes it is the visible one...
-  assert.equal(router.state.location.pathname, "/images");
-  // ...while the committed matches still describe /hub. Reading the model here is what loaded an inventory id.
+  // Current Router releases retain the committed location while beforeLoad waits.
+  // Off-route pages must still read only their own match, not this hub search.
+  assert.equal(router.state.location.pathname, "/hub");
   assert.equal(
     (router.state.matches[0]?.search as { model?: string }).model,
     HUB_INVENTORY_ID,
   );
 
   await navigation;
+  assert.equal(router.state.location.pathname, "/images");
 });
 
 test("no /images match exists to read a model from until the navigation commits", async () => {

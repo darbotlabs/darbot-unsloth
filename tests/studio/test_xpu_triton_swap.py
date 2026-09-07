@@ -77,6 +77,10 @@ def _load(
     install_ok = True,
     pinned = True,
     torch_label = "2.9.1+xpu",
+    xpu_installed = True,
+    backend = "xpu",
+    conflicts = None,
+    cuda_only = "",
 ):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
@@ -122,6 +126,10 @@ def _load(
     pip_state = {"present": has_pip}
     index_urls: list[str] = []
     download_envs: list = []
+    download_commands: list = []
+    probe_commands: list = []
+    uninstall_commands: list = []
+    install_arguments: list = []
 
     def fake_run(cmd, **kw):
         joined = " ".join(str(c) for c in cmd)
@@ -135,17 +143,25 @@ def _load(
                 pip_state["present"] = True
             return subprocess.CompletedProcess(cmd, 0)
         if "importlib.metadata" in joined:
+            probe_commands.append(cmd)
             out = f"SPEC={spec}\nGENERIC={generic}\n".encode()
+            if conflicts is not None:
+                out += f"CONFLICTS={','.join(conflicts)}\n".encode()
+            out += f"CUDA_ONLY={cuda_only}\n".encode()
             return subprocess.CompletedProcess(cmd, 0, stdout = out)
         if "download" in cmd:
             log.append("DOWNLOAD")
+            download_commands.append(cmd)
             index_urls.append(cmd[cmd.index("--index-url") + 1])
             if download_ok and drops_wheel:
                 target = cmd[cmd.index("-d") + 1]
-                Path(target, "pytorch_triton_xpu-3.5.0-py3-none-any.whl").write_bytes(b"")
+                requirement = cmd[cmd.index("-d") + 2]
+                distribution = _re.split(r"[<>=!~]", requirement, maxsplit = 1)[0].replace("-", "_")
+                Path(target, f"{distribution}-3.8.0-py3-none-any.whl").write_bytes(b"")
             return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout = b"")
         if "uninstall" in cmd:
             log.append("UNINSTALL")
+            uninstall_commands.append(cmd)
             return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else 1)
         return subprocess.CompletedProcess(cmd, 0, stdout = b"")
 
@@ -162,6 +178,7 @@ def _load(
         # The real one exits the process via run(), which is what keeps the completion manifest unwritten, so the stub
         # raises SystemExit rather than returning.
         log.append("INSTALL")
+        install_arguments.append(args)
         if not install_ok:
             raise SystemExit(1)
 
@@ -188,8 +205,20 @@ def _load(
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
         "_install_env_for_cmd": _real_install_env_for_cmd,
         "_explicit_xpu_torch_index_url": (
-            (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
+            (lambda: "https://download.pytorch.org/whl/xpu") if pinned and backend == "xpu" else (lambda: None)
         ),
+        "_explicit_rocm_torch_index_url": (
+            (lambda: "https://download.pytorch.org/whl/rocm7.2") if pinned and backend == "rocm" else (lambda: None)
+        ),
+        "_explicit_cuda_torch_index_url": (
+            (lambda: "https://download.pytorch.org/whl/cu130") if pinned and backend == "cuda" else (lambda: None)
+        ),
+        "_explicit_torch_index_url": (
+            (lambda: f"https://download.pytorch.org/whl/{dict(cuda='cu130', rocm='rocm7.2').get(backend, backend)}")
+            if pinned else (lambda: None)
+        ),
+        "_torch_index_leaf": lambda url: url.rsplit("/", 1)[-1],
+        "_exact_distribution_spec_is_installed": lambda spec: xpu_installed,
         "pip_install_try": fake_pip_install_try,
         "pip_install": fake_pip_install,
         "_red": lambda s: s,
@@ -203,6 +232,10 @@ def _load(
     mod.__dict__.update(ns)
     mod.__dict__["_test_index_urls"] = index_urls
     mod.__dict__["_test_download_envs"] = download_envs
+    mod.__dict__["_test_download_commands"] = download_commands
+    mod.__dict__["_test_probe_commands"] = probe_commands
+    mod.__dict__["_test_uninstall_commands"] = uninstall_commands
+    mod.__dict__["_test_install_arguments"] = install_arguments
     return mod, log
 
 
@@ -232,7 +265,7 @@ class TestXpuTritonSwap:
 
     def test_falls_back_to_installing_pip(self, monkeypatch, tmp_path):
         # uv venv has no --seed, so a fresh venv cannot run pip download at all.
-        log = _run(
+        mod, log = _load(
             monkeypatch,
             tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
@@ -240,8 +273,9 @@ class TestXpuTritonSwap:
             has_pip = False,
             ensurepip_works = False,
         )
-        # ensurepip failed, so it tries a real pip install; that fails too, and the swap must warn rather than uninstall
-        # with nothing to install from.
+        with pytest.raises(RuntimeError, match = "No pip"):
+            mod._ensure_xpu_triton()
+        # A failed bootstrap must not delete existing files or certify a conflicting compiler.
         assert "BOOTSTRAP" in log
         assert "UNINSTALL" not in log
 
@@ -257,25 +291,29 @@ class TestXpuTritonSwap:
         assert _run(monkeypatch, tmp_path, spec = spec, generic = generic) == []
 
     def test_a_dead_mirror_removes_nothing(self, monkeypatch, tmp_path):
-        # Warn and leave the venv working; never uninstall with nothing to install from.
-        log = _run(
+        # Stop before mutation; never certify success with a conflicting compiler.
+        mod, log = _load(
             monkeypatch,
             tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             download_ok = False,
         )
+        with pytest.raises(RuntimeError, match = "Could not fetch"):
+            mod._ensure_xpu_triton()
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
     def test_a_successful_exit_with_no_wheel_removes_nothing(self, monkeypatch, tmp_path):
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
-        log = _run(
+        mod, log = _load(
             monkeypatch,
             tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             drops_wheel = False,
         )
+        with pytest.raises(RuntimeError, match = "Could not fetch"):
+            mod._ensure_xpu_triton()
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
 
@@ -283,19 +321,19 @@ class TestFailedSwapIsNotSurvivable:
     def test_a_failed_uninstall_changes_nothing(self, monkeypatch, tmp_path):
         # A read-only or locked venv leaves generic triton registered; installing over it would let
         # a later upgrade delete the shared files again and repeat the swap every pass.
-        log = _run(
+        mod, log = _load(
             monkeypatch,
             tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             uninstall_ok = False,
         )
+        with pytest.raises(RuntimeError, match = "Could not remove"):
+            mod._ensure_xpu_triton()
         assert log == ["DOWNLOAD", "UNINSTALL"]
         assert "INSTALL" not in log
 
     def test_a_failed_install_propagates(self, monkeypatch, tmp_path):
-        # The uninstall already took the shared files, so a warning would commit a venv with a broken torch.compile
-        # that the next update fast-paths past (generic triton is gone, so nothing is left to trigger on).
         with pytest.raises(SystemExit):
             _run(
                 monkeypatch,
@@ -304,6 +342,127 @@ class TestFailedSwapIsNotSurvivable:
                 generic = "3.7.1",
                 install_ok = False,
             )
+
+
+class TestBackendNamespaceOwnership:
+    @pytest.mark.parametrize("backend", ["rocm", "xpu"])
+    def test_backend_change_removes_stale_cuda_only_dependency(self, monkeypatch, tmp_path, backend):
+        compiler = f"triton-{backend}"
+        tag = "rocm7.2" if backend == "rocm" else "xpu"
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = backend, spec = f"{compiler}==3.8.0",
+            torch_label = f"2.14.0+{tag}", generic = "3.8.0", conflicts = ["triton"],
+            cuda_only = "cut-cross-entropy",
+        )
+        getattr(mod, f"_ensure_{backend}_triton")()
+        assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+        command = mod._test_uninstall_commands[0]
+        assert command[command.index("-y") + 1:] == ["triton", "cut-cross-entropy"]
+
+    @pytest.mark.parametrize(
+        "backend,spec,torch_label,conflicts,expected",
+        [
+            ("rocm", "triton-rocm~=3.8.0", "2.14.0+rocm7.2", ["triton", "triton-xpu"], "triton-rocm==3.8.0"),
+            ("xpu", "triton-xpu==3.8.0", "2.14.0+xpu", ["triton", "triton-rocm"], "triton-xpu==3.8.0"),
+            ("cuda", "triton==3.8.0", "2.14.0+cu130", ["triton-rocm", "triton-xpu"], "triton==3.8.0"),
+        ],
+    )
+    def test_backend_change_removes_only_conflicting_providers(
+        self, monkeypatch, tmp_path, backend, spec, torch_label, conflicts, expected,
+    ):
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = backend, spec = spec, torch_label = torch_label,
+            generic = "3.8.0", conflicts = conflicts,
+        )
+        getattr(mod, f"_ensure_{backend}_triton")()
+        assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+        assert expected in mod._test_download_commands[0]
+        command = mod._test_uninstall_commands[0]
+        assert command[command.index("-y") + 1:] == conflicts
+        assert "--force-reinstall" in mod._test_install_arguments[0]
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_rocm_requirement_is_satisfied_by_the_exact_published_provider(
+        self, monkeypatch, tmp_path, installed,
+    ):
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = "rocm", spec = "triton-rocm~=3.8.0",
+            torch_label = "2.14.0+rocm7.2", generic = "", conflicts = [],
+            xpu_installed = installed,
+        )
+        mod._ensure_rocm_triton()
+        if installed:
+            assert log == []
+        else:
+            assert log == ["INSTALL"]
+            assert "triton-rocm==3.8.0" in mod._test_install_arguments[0]
+            assert "https://download.pytorch.org/whl/rocm7.2" in mod._test_install_arguments[0]
+
+    def test_rocm_compiler_is_not_claimed_supported_on_windows(self, monkeypatch, tmp_path):
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = "rocm", spec = "triton-rocm~=3.8.0",
+            torch_label = "2.14.0+rocm7.2", generic = "3.8.0",
+        )
+        mod._ensure_rocm_triton.__globals__["IS_WINDOWS"] = True
+        mod._ensure_rocm_triton()
+        assert log == []
+
+    def test_cpu_pin_does_not_reinstall_a_stale_gpu_compiler(self, monkeypatch, tmp_path):
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = "cpu", spec = "triton-rocm~=3.8.0",
+            torch_label = "2.14.0+rocm7.2", generic = "3.8.0",
+        )
+        mod._ensure_rocm_triton()
+        assert log == []
+
+    def test_windows_cuda_uses_windows_distribution_not_the_pytorch_index(self, monkeypatch, tmp_path):
+        mod, log = _load(
+            monkeypatch, tmp_path, backend = "cuda", spec = "", generic = "",
+            torch_label = "2.14.0+cu130", xpu_installed = False,
+        )
+        mod._ensure_cuda_triton.__globals__["IS_WINDOWS"] = True
+        mod._ensure_cuda_triton()
+        assert log == ["INSTALL"]
+        assert "triton-windows>=3.8.0,<3.9" in mod._test_install_arguments[0]
+        assert "--index-url" not in mod._test_install_arguments[0]
+
+    @pytest.mark.parametrize("platform_system,cuda_only", [("Linux", "cut-cross-entropy"), ("Windows", "")])
+    def test_metadata_probe_excludes_the_selected_rocm_provider(
+        self, monkeypatch, tmp_path, platform_system, cuda_only,
+    ):
+        import contextlib
+        import importlib
+        import io
+        import packaging.markers
+
+        mod, _ = _load(
+            monkeypatch, tmp_path, backend = "rocm", spec = "triton-rocm~=3.8.0",
+            torch_label = "2.14.0+rocm7.2", generic = "", conflicts = [],
+        )
+        mod._ensure_rocm_triton()
+        fake_metadata = types.ModuleType("importlib.metadata")
+        fake_metadata.requires = lambda name: (
+            ['triton-rocm~=3.8.0; platform_system == "Linux"']
+            if name == "torch" else ['triton; platform_system == "Linux"']
+        )
+        fake_metadata.distributions = lambda: [
+            types.SimpleNamespace(metadata = {"Name": name}, version = "3.8.0")
+            for name in ("triton_rocm", "triton", "triton-xpu", "cut-cross-entropy")
+        ]
+        environment = packaging.markers.default_environment()
+        environment["platform_system"] = platform_system
+        monkeypatch.setattr(packaging.markers, "default_environment", lambda: dict(environment))
+        monkeypatch.setitem(sys.modules, "importlib.metadata", fake_metadata)
+        monkeypatch.setattr(importlib, "metadata", fake_metadata)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exec(mod._test_probe_commands[0][-1], {})
+        assert output.getvalue().splitlines() == [
+            "SPEC=triton-rocm~=3.8.0",
+            "GENERIC=3.8.0",
+            "CONFLICTS=triton,triton-xpu",
+            f"CUDA_ONLY={cuda_only}",
+        ]
 
 
 class TestTheInstalledWheelIsThePin:
@@ -423,9 +582,12 @@ class TestADeadDriverIsNotAFlavourMismatch:
     @pytest.mark.parametrize(
         "label, supported",
         [
-            ("2.6.0+xpu", True),
-            ("2.9.1+xpu", True),
-            ("2.10.0+xpu", True),
+            ("2.6.0+xpu", False),
+            ("2.9.1+xpu", False),
+            ("2.10.0+xpu", False),
+            ("2.14.0+xpu", True),
+            ("2.14.1+xpu", True),
+            ("2.15.0+xpu", False),
             ("2.5.1+xpu", False),  # below the floor unsloth raises at
             ("2.11.0+xpu", False),  # past the tested ceiling
             ("3.0.0+xpu", False),
@@ -443,8 +605,8 @@ class TestADeadDriverIsNotAFlavourMismatch:
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
         # Two copies of the range in different places; a drifted floor installs an environment that raises at import.
         src = STACK.read_text(encoding = "utf-8")
-        assert src.count("(2, 6) <= _n < (2, 11)") == 1, "the probe's range moved"
-        assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
+        assert src.count("(2, 14) <= _n < (2, 15)") == 1, "the probe's range moved"
+        assert src.count("(2, 14) <= nums < (2, 15)") == 1, "the disk check's range moved"
 
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the early return must come
@@ -468,14 +630,22 @@ class TestPlatformGuards:
         mod.__dict__["_ensure_xpu_triton"]()
         assert log == []
 
-    def test_windows_defers_to_setup_ps1_when_setup_ps1_ran(self, monkeypatch, tmp_path):
-        # setup.ps1 performs the same swap after this file exits, and publishes the handover variable immediately before
-        # invoking it.
+    def test_windows_repairs_before_the_completion_manifest(self, monkeypatch, tmp_path):
         monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "xpu")
         mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = True
         mod.__dict__["_ensure_xpu_triton"]()
-        assert log == []
+        assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+
+    @pytest.mark.parametrize("windows", [False, True])
+    def test_fresh_xpu_installs_the_missing_compiler(self, monkeypatch, tmp_path, windows):
+        mod, log = _load(
+            monkeypatch, tmp_path, spec = "", generic = "",
+            torch_label = "2.14.0+xpu", xpu_installed = False,
+        )
+        mod.__dict__["_ensure_xpu_triton"].__globals__["IS_WINDOWS"] = windows
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert log == ["INSTALL"]
 
     def test_a_direct_windows_run_does_the_swap_itself(self, monkeypatch, tmp_path):
         # Bare `python install_python_stack.py` on Windows has no setup.ps1 postlude, so the core install leaves
@@ -491,6 +661,8 @@ class TestPlatformGuards:
 def test_the_swap_is_wired_in_at_every_repair_point():
     src = STACK.read_text(encoding = "utf-8")
     assert src.count("        _ensure_xpu_triton()") == 3
+    assert src.count("        _ensure_rocm_triton()") == 2
+    assert src.count("        _ensure_cuda_triton()") == 3
 
 
 def test_the_swap_runs_after_every_torch_migration():

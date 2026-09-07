@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unsloth_zoo"
+version = "2026.9.1+darbot.1"
+description = "Darbot's source-maintained Unsloth Zoo companion for CPython 3.14"
+readme = "README.md"
+requires-python = ">=3.14.7,<3.15"
+license = "LGPL-3.0-or-later AND AGPL-3.0-only"
+license-files = ["LICENSE", "COPYING"]
+authors = [
+    {name = "Unsloth AI team", email = "info@unsloth.ai"},
+]
+maintainers = [{name = "Darbot Labs"}]
+classifiers = [
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "torch==2.14.0 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "torchao==0.18.0 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "tyro==1.0.16 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "accelerate==1.14.0 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "trl==1.12.0 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "peft==0.20.0 ; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "mlx==0.32.2 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm==0.31.3 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm==0.6.17 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "packaging==26.3",
+    "transformers==5.16.1",
+    "datasets==5.0.1",
+    "dill==0.4.1",
+    "multiprocess==0.70.19",
+    "scikit-learn==1.9.0",
+    "sentencepiece==0.2.2",
+    "tqdm==4.70.0",
+    "psutil==7.2.2",
+    "wheel==0.48.0",
+    "numpy==2.5.3",
+    "protobuf @ https://files.pythonhosted.org/packages/16/28/d5065b212685875d3924bcdb3201cbf467cb4d58a18aa19a8dfd99ea80a9/protobuf-4.25.9-py3-none-any.whl#sha256=d49b615e7c935194ac161f0965699ac84df6112c378e05ec53da65d2e4cbb6d4",
+    "huggingface-hub==1.30.0",
+    "hf-transfer==0.1.9",
+    "pillow==12.3.0",
+    "regex==2026.9.3",
+    "msgspec==0.21.1",
+    "typing-extensions==4.16.0",
+    "filelock==3.32.5",
+]
+
+[project.optional-dependencies]
+# The accelerator installer selects a compiler; do not make CUDA Triton a
+# mandatory dependency of the XPU, ROCm, or Apple Silicon companion.
+core = []
+cuda = [
+    "triton==3.8.0 ; sys_platform == 'linux'",
+    "triton-windows==3.8.0.post28 ; sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    # Its genuine Linux metadata requires generic Triton, not the ROCm/XPU
+    # distributions that provide the same import namespace.
+    "cut-cross-entropy==25.1.1 ; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+huggingface = ["unsloth_zoo[cuda]==2026.9.1+darbot.1"]
+base = ["unsloth_zoo[huggingface]==2026.9.1+darbot.1"]
+intelgpu = [
+    "triton-xpu==3.8.0 ; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+rocm = [
+    "triton-rocm==3.8.0 ; sys_platform == 'linux'",
+]
+mlx = [
+    "mlx==0.32.2",
+    "mlx-lm==0.31.3",
+    "mlx-vlm==0.6.17",
+]
+
+[project.urls]
+repository = "https://github.com/darbotlabs/darbot-unsloth"
+upstream = "https://github.com/unslothai/unsloth-zoo"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-data]
+unsloth_zoo = [
+    "diffusion_studio/*.html",
+    "_darbot_provenance.json",
+    "_vendored/NOTICE",
+    "_vendored/fla/LICENSE",
+    "_vendored/fla/MANIFEST",
+]
+
+[tool.setuptools.packages.find]
+include = ["unsloth_zoo", "unsloth_zoo.*"]
+exclude = ["tests*", "scripts*"]

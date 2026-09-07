@@ -12,8 +12,7 @@
 #
 # The contract now: a consumer install must SUCCEED with no Xcode Command Line Tools
 # (uv, CPython, llama.cpp/whisper.cpp/Node are all prebuilt, triton is skipped on
-# macOS), while `--local` must still fail loudly: unsloth-zoo comes from a git+https
-# URL.
+# macOS). Local Core and the maintained Zoo companion also need no Git clone.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -107,13 +106,13 @@ _out="$(_run_gate false)"
 assert_contains "consumer install proceeds"          "$_out" "RC=0"
 assert_contains "reports CLT absent but optional"    "$_out" "not required"
 
-echo "=== --local with a non-functional git: must fail loudly ==="
+echo "=== --local with a non-functional git uses maintained local source ==="
 _out="$(_run_gate true)"
-assert_contains "fails"                              "$_out" "RC=1"
-assert_contains "explains why git is needed"         "$_out" "unsloth-zoo"
-assert_contains "names the remedy"                   "$_out" "xcode-select --install"
-assert_contains "emits a machine-readable marker"    "$_out" "[TAURI:NEED_XCODE_CLT]"
-assert_contains "says a normal install needs none"   "$_out" "non---local"
+assert_contains "local install proceeds"             "$_out" "RC=0"
+assert_contains "CLT remain optional"                "$_out" "not required"
+assert_contains "source-build guidance is retained"  "$_out" "xcode-select --install"
+assert_not_contains "no required-toolchain marker"   "$_out" "[TAURI:NEED_XCODE_CLT]"
+assert_not_contains "no Git requirement for local Zoo" "$_out" "git is required"
 
 echo "=== --local with a working git: proceeds ==="
 rm -f "$_BIN"/*

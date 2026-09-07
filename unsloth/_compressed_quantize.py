@@ -228,6 +228,14 @@ def main():
     ap.add_argument("--variant", default = "", help = "weight-filename variant for the output shards")
     args = ap.parse_args()
 
+    # This file also runs directly, deliberately without importing Unsloth's
+    # GPU monkey patches into the quantizer subprocess.
+    if __package__:
+        from .quantization_compat import require_llm_compressor_compatibility
+    else:
+        from quantization_compat import require_llm_compressor_compatibility
+    require_llm_compressor_compatibility()
+
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier

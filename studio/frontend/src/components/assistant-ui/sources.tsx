@@ -10,7 +10,7 @@ import {
   type ComponentProps,
   type FC,
 } from "react";
-import { useMessage } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { Badge, badgeVariants, type BadgeProps } from "./badge";
 import {
@@ -192,7 +192,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
   sources: suppliedSources,
   allowRemoteIcons = true,
 }) => {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);

@@ -591,6 +591,29 @@ def sft_trainer_prepare_dataset(function_name, function):
     if function_name != "_prepare_non_packed_dataloader" and function_name != "_prepare_dataset":
         return function
 
+    if function_name == "_prepare_dataset" and trl_version >= Version("1.12.0"):
+        # TRL 1.12 folds completion/assistant masks into labels before packing.
+        # Replacing it with the legacy Zoo tokenizer discards those semantics.
+        # Keep the released pipeline, normalize workers, and restore the local
+        # truncation cap that the padding-free handshake moved to max_seq_length.
+        match = re.search(
+            r"^(?P<indent>[ \t]*)def _prepare_dataset\s*\(.*?\)\s*(?:->[^:\n]*)?:[ \t]*\n",
+            function,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if match is None:
+            raise RuntimeError("Unsloth: Cannot locate the TRL 1.x dataset preparation signature.")
+        indent = match.group("indent") + "    "
+        setup = (
+            "import copy as _unsloth_copy",
+            "from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc",
+            "args = _unsloth_copy.copy(args)",
+            'args.dataset_num_proc = _unsloth_get_dataset_num_proc(getattr(args, "dataset_num_proc", None))',
+            'if args.max_length is None and getattr(args, "padding_free", False):',
+            '    args.max_length = getattr(args, "max_seq_length", None)',
+        )
+        return function[:match.end()] + "".join(indent + line + "\n" for line in setup) + function[match.end():]
+
     fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
     if fast_sft_prepare_dataset is not None:
         params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
@@ -667,26 +690,16 @@ def sft_trainer_prepare_dataset(function_name, function):
         )""",
                 where = "sft_prepare_dataset pack_dataset call",
             )
-            # The map() call site, not the config, is where the worker count is made safe: the Zoo copy
-            # asks stdlib multiprocessing for a start method datasets takes from multiprocess, and its
-            # low-memory branch yields 1, still a Pool(1) on datasets >= 4.1. Imported from the Zoo so
-            # generated source never imports back into its generator.
+            # Resolve the config sentinel at the map() boundary. The maintained
+            # Zoo already uses this policy; preserve it in transplanted source
+            # and retain a fallback for older generated trainer caches.
             function = _replace_or_fallback(
                 function,
                 """if not isinstance(dataset, IterableDataset):
-            import multiprocessing as _mp
-            dataset_num_proc = getattr(args, "dataset_num_proc", None)
-            if dataset_num_proc is None:
-                if _mp.get_start_method() != 'fork':
-                    dataset_num_proc = None
-                else:
-                    import psutil
-                    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
-                    memory_gb_left = psutil.virtual_memory().available / (1024**3)
-                    if memory_gb_left <= 2:
-                        dataset_num_proc = 1
-                    else:
-                        dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
+            from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
+            dataset_num_proc = get_dataset_num_proc(
+                getattr(args, "dataset_num_proc", None),
+            )
             map_kwargs["num_proc"] = dataset_num_proc""",
                 """if not isinstance(dataset, IterableDataset):
             try:

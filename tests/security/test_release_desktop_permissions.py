@@ -15,6 +15,23 @@ def _workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
 
 
+def test_fork_desktop_publication_requires_explicit_opt_in():
+    gate = "vars.UNSLOTH_DESKTOP_PUBLISH == 'true'"
+    workflow = _workflow()
+    assert gate in workflow["jobs"]["prepare-version"]["if"]
+    updater = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
+    assert gate in updater["jobs"]["publish-updater"]["if"]
+    validation = next(
+        step["run"]
+        for step in workflow["jobs"]["build"]["steps"]
+        if step.get("name") == "Verify desktop updater and Linux package config"
+    )
+    assert "process.env.GITHUB_REPOSITORY" in validation
+    assert "config.plugins?.updater?.pubkey" in validation
+    assert "config.bundle?.createUpdaterArtifacts !== true" in validation
+    assert "https://github.com/unslothai/unsloth/releases" not in validation
+
+
 def test_only_publish_job_can_write_repository_contents():
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}

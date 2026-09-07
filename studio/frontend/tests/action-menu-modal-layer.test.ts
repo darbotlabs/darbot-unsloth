@@ -91,7 +91,7 @@ test("the prop reaches Radix rather than being swallowed by the wrapper", () => 
   const text = readFileSync(wrapper, "utf8");
   assert.match(
     text,
-    /DropdownMenuPrimitive\.Root,\s*\{[^}]*\.\.\.rest/,
+    /DropdownMenu\.Root,\s*\{[^}]*\.\.\.rest/,
     "ActionBarMorePrimitive.Root no longer forwards unknown props to Radix",
   );
   assert.doesNotMatch(

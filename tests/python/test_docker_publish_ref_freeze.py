@@ -24,7 +24,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 
-RESOLVER_STEPS = ("unsloth_ref", "zoo_ref", "notebooks")
+RESOLVER_STEPS = ("unsloth_ref", "notebooks")
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None,
@@ -196,85 +196,14 @@ def _run_with_failing_ls_remote(script: str, tmp_path: Path):
     )
 
 
-# git documents status 2 for "talked to the remote, no matching refs" and any other
-# non-zero for "never reached it", so treating every non-zero as "tag absent" lets a
-# transient DNS/TLS failure pair the unsloth tag with zoo `main`.
-
-ZOO_TAG = "v2026.9.1"
-ZOO_MAIN_SHA = "1" * 40
-ZOO_TAG_SHA = "2" * 40
-
-
-def _expand_tag_trigger(run: str) -> str:
-    run = run.replace("${{ github.event.inputs.unsloth_zoo_ref }}", "")
-    run = run.replace("${{ startsWith(github.ref, 'refs/tags/') }}", "true")
-    run = run.replace("${{ github.ref_name }}", ZOO_TAG)
-    return re.sub(r"\$\{\{[^}]*\}\}", "", run)
-
-
-def _run_zoo_step(script: str, tmp_path: Path, *, probe_exit: int):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(parents = True, exist_ok = True)
-    stub = bin_dir / "git"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
-        'for a in "$@"; do\n'
-        '  if [ "$a" = "--exit-code" ]; then\n'
-        + (
-            '    echo "fatal: unable to access: Could not resolve host" >&2\n'
-            if probe_exit not in (0, 2)
-            else ""
-        )
-        + f"    exit {probe_exit}\n"
-        "  fi\n"
-        "done\n"
-        'if [ "${!#}" = "main" ]; then\n'
-        f'  printf "%s\\trefs/heads/main\\n" "{ZOO_MAIN_SHA}"\n'
-        "else\n"
-        f'  printf "%s\\trefs/tags/{ZOO_TAG}\\n" "{ZOO_TAG_SHA}"\n'
-        "fi\n"
-        "exit 0\n",
-        encoding = "utf-8",
-    )
-    stub.chmod(0o755)
-    out = tmp_path / "github_output"
-    out.write_text("", encoding = "utf-8")
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["GITHUB_OUTPUT"] = str(out)
-    path = tmp_path / "zoo_step.sh"
-    path.write_text(_expand_tag_trigger(script), encoding = "utf-8")
-    res = subprocess.run(
-        ["bash", "-e", str(path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 60,
-    )
-    return res, out.read_text(encoding = "utf-8")
-
-
-def test_an_unreachable_zoo_probe_fails_instead_of_taking_main(steps: dict, tmp_path: Path):
-    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 128)
-    assert res.returncode != 0, (
-        "a transport failure in the tag probe must fail the prepare job; taking "
-        "'main' pairs the requested unsloth tag with an unrelated zoo revision:\n"
-        f"stdout={res.stdout}\nstderr={res.stderr}"
-    )
-    assert f"ref={ZOO_MAIN_SHA}" not in emitted, emitted
-
-
-def test_a_missing_zoo_tag_still_falls_back_to_main(steps: dict, tmp_path: Path):
-    # git's "reached the remote, no matching refs" status: the common case
-    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 2)
-    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
-    assert emitted.strip() == f"ref={ZOO_MAIN_SHA}", emitted
-
-
-def test_a_present_zoo_tag_is_mirrored(steps: dict, tmp_path: Path):
-    res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 0)
-    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
-    assert emitted.strip() == f"ref={ZOO_TAG_SHA}", emitted
+def test_zoo_follows_core_instead_of_resolving_an_unrelated_revision():
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    assert "unsloth_zoo_ref" not in text
+    assert "UNSLOTH_ZOO_REF" not in text
+    assert "UNSLOTH_STUDIO_ZOO_REF" not in text
+    assert "github.com/unslothai/unsloth-zoo" not in text
+    assert "UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}" in text
+    assert "UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}" in text
 
 
 # build-studio FROMs the digest this step exports. metadata-action sorts tags by

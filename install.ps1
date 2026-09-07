@@ -661,6 +661,17 @@ function Install-UnslothStudio {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--skip-autostart" { $SkipAutostart = $true }
+            "--python" {
+                $i++
+                if ($i -ge $argList.Count) { return (Exit-InstallFailure "--python requires a version.") }
+                $env:UNSLOTH_PYTHON = $argList[$i]
+            }
+            "--env-dir" {
+                $i++
+                if ($i -ge $argList.Count) { return (Exit-InstallFailure "--env-dir requires a dedicated virtual environment path.") }
+                $env:UNSLOTH_ENV_DIR = $argList[$i]
+            }
             "--isolated-uv-cache" { $IsolateUvCache = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
@@ -693,11 +704,38 @@ function Install-UnslothStudio {
         $env:UNSLOTH_VERBOSE = '1'
     }
 
-    if ($StudioLocalInstall) {
+    # A CI checkout must supply the fork before dependency resolution, not merely
+    # overlay capped release metadata afterward. No Git executable is needed.
+    if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
+        try {
+            $RepoRoot = (Resolve-Path -LiteralPath $env:UNSLOTH_CI_SOURCE_OVERLAY.Trim() -ErrorAction Stop).ProviderPath
+        } catch {
+            return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY is not an accessible checkout: $env:UNSLOTH_CI_SOURCE_OVERLAY")
+        }
+        $StudioLocalInstall = $true
+    } elseif ($StudioLocalInstall) {
         $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
             Write-StudioLine "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
             return (Exit-InstallFailure "--local must be run from the unsloth repo root")
+        }
+    }
+    if ($StudioLocalInstall) {
+        foreach ($sourceFile in @(
+            "pyproject.toml",
+            "unsloth\__init__.py",
+            "unsloth_cli\__init__.py",
+            "studio\setup.ps1",
+            "studio\install_python_stack.py",
+            "studio\install_manifest.py",
+            "studio\python_policy.py",
+            "studio\install_zoo.py",
+            "studio\backend\vendor\unsloth_zoo_compat\pyproject.toml",
+            "studio\backend\requirements\no-torch-runtime.txt"
+        )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $sourceFile) -PathType Leaf)) {
+                return (Exit-InstallFailure "--local / UNSLOTH_CI_SOURCE_OVERLAY requires a complete maintained fork checkout: missing $sourceFile at $RepoRoot")
+            }
         }
     }
 
@@ -707,15 +745,20 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
-    $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
+    # Standard-GIL CPython only. Never resolve an older minor as a fallback.
+    $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON.Trim() } else { "3.14" }
+    if ($PythonVersion -notmatch '^3\.14(?:\.(?:[7-9]|[1-9][0-9]+))?$') {
+        return (Exit-InstallFailure "Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t). UNSLOTH_PYTHON=$PythonVersion is unsupported.")
+    }
+    $RequestedPythonVersion = $PythonVersion
+    $PythonVersion = "3.14"
     # python.org fallback patch when winget and the live listing fail; bump with $PythonVersion.
-    $PythonFallbackFullVersion = "3.13.13"
+    $PythonFallbackFullVersion = if ($RequestedPythonVersion -match '^3\.14\.\d+$') { $RequestedPythonVersion } else { "3.14.7" }
     # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
     # Windows resolves an installed interpreter and hands uv its path rather
     # than a version, so uv never picks one of these -- but the machine may
     # already have it, and $PythonFallbackFullVersion above is what replaces it.
-    $PythonSkip = @("3.13.8")
+    $PythonSkip = @()
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
@@ -1220,6 +1263,23 @@ public static class UnslothStudioFinalPathV2
         $StudioRedirectMode = 'default'
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
+    $ExplicitVenvDir = -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_ENV_DIR)
+    if ($ExplicitVenvDir) {
+        if ($env:UNSLOTH_ENV_DIR.Trim() -notmatch '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') {
+            return (Exit-InstallFailure "UNSLOTH_ENV_DIR must be an absolute virtual environment path, including its drive or UNC share.")
+        }
+        $VenvDir = [System.IO.Path]::GetFullPath($env:UNSLOTH_ENV_DIR.Trim())
+        if ($VenvDir.TrimEnd('\') -eq [System.IO.Path]::GetPathRoot($VenvDir).TrimEnd('\') -or
+            $VenvDir.TrimEnd('\') -eq $StudioHome.TrimEnd('\') -or
+            $StudioHome.StartsWith($VenvDir.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return (Exit-InstallFailure "UNSLOTH_ENV_DIR must name a dedicated virtual environment, not a drive or Studio data root.")
+        }
+        $env:UNSLOTH_ENV_DIR = $VenvDir
+        if ((Test-Path -LiteralPath $VenvDir) -and
+            ((Get-Item -LiteralPath $VenvDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            return (Exit-InstallFailure "UNSLOTH_ENV_DIR must not be a junction or symlink.")
+        }
+    }
 
     function Set-StudioUvCacheEnvironment {
         param(
@@ -1866,7 +1926,7 @@ public static class UnslothStudioFinalPathV2
     # Written into every generated bin\unsloth.cmd and required by every ownership
     # check that accepts one. Mirrored in scripts/uninstall.ps1 and studio/setup.ps1.
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
-    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; import sysconfig; sys.exit('Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t)') if not (sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')) else None; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
     # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
     # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
@@ -2224,7 +2284,7 @@ public static class UnslothStudioFinalPathV2
             if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
                 $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
             }
-            $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
+            $iconUrl = "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/studio/frontend/public/unsloth.ico"
 
             if (-not (Test-Path -LiteralPath $appDir)) {
                 [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
@@ -2848,7 +2908,7 @@ exit 0
             Write-StudioLine "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
             Write-StudioLine "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
             Write-StudioLine "        installer again:" -ForegroundColor Yellow
-            Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-StudioLine "          irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Cyan
             Write-StudioLine ""
             return (Exit-InstallFailure "Refusing to install into $StudioHomeFull, which is inside $SystemRootDir. Run the installer from a normal user account.")
         }
@@ -2872,7 +2932,7 @@ exit 0
             Write-StudioLine "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
             Write-StudioLine "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
             Write-StudioLine "        the installer again:" -ForegroundColor Yellow
-            Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-StudioLine "          irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Cyan
             Write-StudioLine ""
             return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir, and no folder outside $SystemRootDir was usable. Run the installer from a normal user account.")
         }
@@ -3188,6 +3248,10 @@ exit 0
                 $studioRuntimeMutexNames = @(
                     Get-StudioRuntimeMutexNames -TauriRootMatch $studioTauriRootMatch -Path $StudioHome
                 )
+                if ($ExplicitVenvDir) {
+                    # Two data roots must not rebuild the same explicit environment concurrently.
+                    $studioRuntimeMutexNames += Get-StudioInstallMutexName -Path $VenvDir
+                }
                 foreach ($studioRuntimeMutexName in $studioRuntimeMutexNames) {
                     $mutex = Enter-StudioNamedMutex -Name $studioRuntimeMutexName
                     if ($null -eq $mutex) {
@@ -3263,7 +3327,7 @@ exit 0
         substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
-    # ── Detect Python 3.11-3.13, skipping conda and venvs whose base_prefix is conda. ──
+    # Detect standard-GIL CPython 3.14.7+, excluding conda-based interpreters.
     $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
 
     function Test-IsCondaPython {
@@ -3286,12 +3350,19 @@ exit 0
         } catch { return "" }
     }
 
-    # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
+    function Test-SupportedPython {
+        param([string]$Exe)
+        try {
+            $pinCheck = if ($RequestedPythonVersion -match '^3\.14\.\d+$') { " and '.'.join(map(str,sys.version_info[:3])) == '$RequestedPythonVersion'" } else { "" }
+            $answer = (& $Exe -I -S -c "import sys,sysconfig; print(int(sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')$pinCheck))" 2>$null | Out-String).Trim()
+            return $LASTEXITCODE -eq 0 -and $answer -eq "1"
+        } catch { return $false }
+    }
+
+    # Returns @{ Version = "3.14"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
-    # Candidates on $PythonSkip are dropped as they are enumerated, so no caller
-    # can be handed an interpreter that cannot import torch and the usual
-    # 3.13 -> 3.12 -> 3.11 fallback still applies when the preferred minor is bad.
+    # Every candidate is screened for the patch floor and standard GIL ABI.
     function Find-CompatiblePython {
         # -X64Only: best installed x64 interpreter or $null, never ARM64. Last resort for
         # Install-X64Python, where x64 of a lower-priority minor beats ARM64.
@@ -3304,15 +3375,25 @@ exit 0
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
-        # Prefer the requested $PythonVersion, then newest-first fallback.
-        $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+        # There is no fallback to an older Python minor.
+        $minors = @("3.14")
+        foreach ($explicitPython in @($env:UNSLOTH_PYTHON_EXE, "C:\Python314\python.exe")) {
+            if ($explicitPython -and (Test-Path -LiteralPath $explicitPython -PathType Leaf) -and
+                (Test-SupportedPython $explicitPython) -and -not (Test-IsCondaPython $explicitPython)) {
+                $tag = Get-PythonPlatformTag $explicitPython
+                if (-not $preferX64 -or $tag -eq "win-amd64") {
+                    $arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
+                    return @{ Version = "3.14"; Path = $explicitPython; Arch = $arch }
+                }
+            }
+        }
         # -All: Windows PowerShell 5.1 returns only the first launcher without it.
         foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
             if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
             foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                    if ($out -match "Python ((3\.14)\.\d+)") {
                         # Both captures first: Test-IsCondaPython below runs -match
                         # and overwrites $Matches. Screening the patch here costs no
                         # extra subprocess (the text is already in hand) and lets the
@@ -3322,7 +3403,7 @@ exit 0
                         if ($PythonSkip -contains $full) { continue }
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and (Test-SupportedPython $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
@@ -3338,14 +3419,14 @@ exit 0
                 if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                    if ($out -match "Python ((3\.14)\.\d+)") {
                         $full = $Matches[1]
                         $ver = $Matches[2]
                         if ($PythonSkip -contains $full) { continue }
                         # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and (Test-SupportedPython $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
@@ -3372,19 +3453,18 @@ exit 0
                     if (Test-IsCondaPython $exe) { continue }
                     try {
                         $out = & $exe --version 2>&1 | Out-String
-                        if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                        if ($out -match "Python ((3\.14)\.\d+)") {
                             $full = $Matches[1]
                             $ver = $Matches[2]
                             if ($PythonSkip -contains $full) { continue }
+                            if (-not (Test-SupportedPython $exe)) { continue }
                             $candidates += @{ Version = $ver; Path = $exe }
                         }
                     } catch {}
                 }
             }
         }
-        # Prefer x64, but only within one minor: $minors is the caller's version preference,
-        # so ranking on arch alone would answer UNSLOTH_PYTHON=3.12 with an x64 3.13 and
-        # never bootstrap x64 3.12. Probing costs a subprocess, so non-ARM returned above.
+        # Rank compatible 3.14 candidates by architecture; never by an older minor.
         foreach ($c in $candidates) {
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
@@ -3417,13 +3497,13 @@ exit 0
             return $null
         }
 
-        # The pinned full version applies only to a matching minor, so 3.12 cannot install 3.13.
+        # An explicit patch request is retained rather than replaced by the live listing.
         $full = if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $PythonFallbackFullVersion } else { "$PythonVersion.0" }
         try {
             $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
             $patches = [regex]::Matches($listing, ([regex]::Escape($PythonVersion) + '\.(\d+)/')) |
                 ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Descending
-            if ($patches.Count -gt 0) { $full = "$PythonVersion.$($patches[0])" }
+            if ($patches.Count -gt 0 -and $patches[0] -ge 7 -and $RequestedPythonVersion -eq "3.14") { $full = "$PythonVersion.$($patches[0])" }
         } catch {}
 
         $file = "python-$full$archSuffix.exe"
@@ -3492,10 +3572,11 @@ exit 0
     function Remove-SkippedPython {
         param($Candidate)
         if (-not $Candidate) { return $null }
+        if (-not (Test-SupportedPython $Candidate.Path)) { return $null }
         try {
             $raw = (& $Candidate.Path -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
         } catch {
-            return $Candidate  # unreadable: not evidence of a bad version
+            return $null
         }
         if ($raw -and ($PythonSkip -contains $raw.Trim())) {
             substep "Python $($raw.Trim()) cannot import torch -- installing another." "Yellow"
@@ -3526,8 +3607,11 @@ exit 0
         return (Find-CompatiblePython -X64Only)
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
+    # Install Python when no standard-GIL CPython >=3.14.7,<3.15 was found.
     Write-TauriLog "STEP" "Installing Python"
+    if ($env:UNSLOTH_PYTHON_EXE -and -not (Test-SupportedPython $env:UNSLOTH_PYTHON_EXE)) {
+        return (Exit-InstallFailure "UNSLOTH_PYTHON_EXE must name standard-GIL CPython >=3.14.7,<3.15 matching --python; older and 3.14t interpreters are rejected.")
+    }
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
     if ($DetectedPython) {
@@ -3612,7 +3696,7 @@ exit 0
 
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    $UvMinVersion = "0.8.16"
+    $UvMinVersion = "0.12.10"
 
     # PowerShell ranks aliases and functions above anything on PATH, so a profile carrying
     # "Set-Alias uv ..." or "function uv {...}" captures every bare uv call here and the version
@@ -3747,11 +3831,11 @@ exit 0
     # SHA-256 instead of script text run in-process, which is what AMSI and cloud
     # ML scanners score hardest. Bumping the version means bumping all 3 hashes:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
-    $UvPinnedVersion = "0.12.1"
+    $UvPinnedVersion = "0.12.10"
     $UvPinnedAssets = @{
-        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "F65744F94072152B1F86BA2AACE4D01F1124D9A8ECB235805039E3718C36CAC2" }
+        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "EE985C51C0C9C1F82267A5D80F959B34A7FF888C109182BD3B2B35C4661BBCDE" }
+        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "CBF375FE6BF8A4E9FFB2F09C1FF4F8ED29BA96594A604749F84FA4E08C9A4586" }
     }
 
     function Install-UvFromRelease {
@@ -4060,13 +4144,15 @@ exit 0
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
-        $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID"
+        $rollbackParent = Split-Path -Parent $ExistingDir
+        $rollbackName = Split-Path -Leaf $ExistingDir
+        $candidate = Join-Path $rollbackParent "$rollbackName.rollback.$stamp.$PID"
         $suffix = 0
         # -LiteralPath: a custom $StudioHome may contain [ ] * ? which
         # plain Test-Path / Move-Item would interpret as wildcards.
         while (Test-Path -LiteralPath $candidate) {
             $suffix++
-            $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
+            $candidate = Join-Path $rollbackParent "$rollbackName.rollback.$stamp.$PID.$suffix"
         }
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
@@ -4266,6 +4352,13 @@ exit 0
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
+        if ($ExplicitVenvDir) {
+            substep "retaining previous environment and any user files at $backup"
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+            $script:StudioVenvRollbackPartial = $false
+            return
+        }
         # The replacement is committed. Disable restoration before deleting the
         # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
@@ -4309,6 +4402,12 @@ exit 0
     try {
     # Replace occupied venvs even when python.exe is missing, as in #9479.
     if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
+        if ($ExplicitVenvDir -and (
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir "pyvenv.cfg") -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf)
+        )) {
+            throw "UNSLOTH_ENV_DIR=$VenvDir is not an owned Studio venv. Validate and archive it before adding .unsloth-studio-owned; no files were replaced."
+        }
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
         # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
@@ -4341,7 +4440,7 @@ exit 0
             return (Exit-InstallFailure "Could not prepare existing environment for reinstall")
         }
     } elseif (
-        $studioUsesLegacyLayout `
+        $studioUsesLegacyLayout -and -not $ExplicitVenvDir `
         -and (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe"))
     ) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating.
@@ -4358,7 +4457,7 @@ exit 0
             } else {
                 & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
             }
-            $legacyOk = ($LASTEXITCODE -eq 0)
+            $legacyOk = ($LASTEXITCODE -eq 0) -and (Test-SupportedPython $OldPy)
         } catch { $legacyOk = $false }
         $ErrorActionPreference = $prevEAP2
         if ($legacyOk) {
@@ -4378,8 +4477,9 @@ exit 0
             Move-Item -LiteralPath $OldVenv -Destination $invalidVenv -Force -ErrorAction SilentlyContinue
         }
     } elseif (
-        $studioUsesLegacyLayout `
-        -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
+        $studioUsesLegacyLayout -and -not $ExplicitVenvDir `
+        -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe")) `
+        -and (Test-SupportedPython (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
     ) {
         # CWD-relative venv from old install.ps1 -> migrate to absolute path.
         # Skip custom-root env-mode so it is not relocated into a workspace root.
@@ -4412,6 +4512,10 @@ exit 0
     # Mark the managed venv before probing so failed installs can be replaced on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+        [System.IO.File]::WriteAllText(
+            (Join-Path $VenvDir ".unsloth-studio-home"), $StudioHome,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
     }
 
     if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
@@ -5203,31 +5307,40 @@ exit 0
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
+    function Assert-MaintainedTorchIndex {
+        param([string]$Url)
+        $leaf = (($Url -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if ($leaf -match '^(cu\d+|rocm\d+\.\d+|gfx[0-9a-f]+)$' -and $leaf -notin @('cu130', 'rocm7.2')) {
+            throw "Unsupported Torch 2.14 index family '$leaf'; maintained profiles are cu130, cpu, xpu, and rocm7.2. Explicit pins are never silently aliased."
+        }
+        return $Url
+    }
+
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        if ($SkipTorch) { return "$baseUrl/cpu" }
         # An explicit pin skips ALL GPU probing. Matches install.sh / install_python_stack.py.
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
-            return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
+            return (Assert-MaintainedTorchIndex (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL))
         }
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
-            return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+            return (Assert-MaintainedTorchIndex "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))")
         }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
+        $driverMajor = $null
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
             if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
-                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                        { $family = "cu130" }
-                elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-                elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-                elseif ($major -ge 12) { $family = "cu124" }
-                elseif ($major -ge 11) { $family = "cu118" }
-                else { return "$baseUrl/cpu" }
-                return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe)"
+                $driverMajor = [int]$Matches[1]
             }
         } catch {}
-        substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
-        return "$baseUrl/cu126"
+        if ($null -ne $driverMajor -and $driverMajor -lt 13) {
+            throw "The maintained Torch 2.14 CUDA profile requires a CUDA 13-capable NVIDIA driver. Upgrade the driver, or explicitly select UNSLOTH_TORCH_INDEX_FAMILY=cpu."
+        }
+        if ($null -eq $driverMajor) {
+            substep "could not determine CUDA version from nvidia-smi; selecting the maintained cu130 profile" "Yellow"
+        }
+        return "$baseUrl/cu130"
     }
 
     function Remove-IndexUrlCredentials {
@@ -5305,9 +5418,9 @@ exit 0
     # XPU device below it) and no torchaudio on win-arm64.
     function Get-XpuTorchSpecs {
         param([string]$Platform)
-        $specs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0")
+        $specs = @("torch==2.14.0", "torchvision==0.29.0")
         if ($Platform -eq "win-arm64") { return $specs }
-        return $specs + @("torchaudio>=2.6,<2.11.0")
+        return $specs + @("torchaudio==2.11.0")
     }
 
     # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Bounded, so a wedged
@@ -5517,17 +5630,22 @@ exit 0
         if (-not (Test-TorchReleaseInWindow -Release $release -Constraint $Constraint)) { return $null }
         if ($release.Major -ne 2) { return $null }
         $visionMinor = $release.Minor + 15
+        $visionSpec = if ($release.Minor -eq 14) { "torchvision==0.29.0" } else { "torchvision==0.$visionMinor.*" }
         return [pscustomobject]@{
             Release    = $release
             TorchSpec  = "torch==$($release.PublicBase)"
-            VisionSpec = "torchvision==0.$visionMinor.*"
-            AudioSpec  = "torchaudio==2.$($release.Minor).*"
+            VisionSpec = $visionSpec
+            AudioSpec  = "torchaudio==2.11.0"
         }
     }
 
     $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
-    $TorchIndexUrl = Get-TorchIndexUrl
+    try {
+        $TorchIndexUrl = Get-TorchIndexUrl
+    } catch {
+        return (Exit-InstallFailure $_.Exception.Message)
+    }
 
     # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call overwrites
     # it. An explicit pin still wins, like the AMD ROCm reroute below.
@@ -5562,20 +5680,20 @@ exit 0
         # Bump the ceiling here (and in install_python_stack.py) when 2.12.x is
         # confirmed working on gfx120X / Strix.
         $torchFloorMap = @{
-            "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
-            "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
-            "gfx1152" = "torch>=2.11.0,<2.12.0"
+            "gfx1201" = "torch==2.14.0"; "gfx1200" = "torch==2.14.0"
+            "gfx1151" = "torch==2.14.0"; "gfx1150" = "torch==2.14.0"
+            "gfx1152" = "torch==2.14.0"
         }
         # Companions track the torch ceiling for a consistent trio on AMD's per-arch index.
         $torchvisionFloorMap = @{
-            "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
-            "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
-            "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1201" = "torchvision==0.29.0"; "gfx1200" = "torchvision==0.29.0"
+            "gfx1151" = "torchvision==0.29.0"; "gfx1150" = "torchvision==0.29.0"
+            "gfx1152" = "torchvision==0.29.0"
         }
         $torchaudioFloorMap = @{
-            "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
-            "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
-            "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1201" = "torchaudio==2.11.0"; "gfx1200" = "torchaudio==2.11.0"
+            "gfx1151" = "torchaudio==2.11.0"; "gfx1150" = "torchaudio==2.11.0"
+            "gfx1152" = "torchaudio==2.11.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -5608,9 +5726,9 @@ exit 0
         $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $_pinLeaf
         if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
-            $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
-            $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
-            $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
+            $ROCmTorchFloor = "torch==2.14.0"
+            $PinnedRocmVisionSpec = "torchvision==0.29.0"
+            $PinnedRocmAudioSpec = "torchaudio==2.11.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
         } elseif ($_pinLeaf -match '^gfx[0-9]' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
             # Other gfx / older rocm (<=7.1) ship torch <2.11: bare specs. Only EXACT leaves count.
@@ -5742,31 +5860,129 @@ exit 0
         return $f
     }
 
+    function Get-MaintainedForkSourceArchive {
+        param([string]$DestinationParent)
+        $headers = @{ "User-Agent" = "Darbot-Unsloth-Installer"; "Accept" = "application/vnd.github+json" }
+        $revision = Invoke-RestMethod -Uri "https://api.github.com/repos/darbotlabs/darbot-unsloth/commits/main" -Headers $headers -ErrorAction Stop
+        $commit = [string]$revision.sha
+        if ($commit -notmatch '^[0-9a-fA-F]{40}$') { throw "GitHub did not return a valid fork commit." }
+        $commit = $commit.ToLowerInvariant()
+        $archiveUrl = "https://codeload.github.com/darbotlabs/darbot-unsloth/zip/$commit"
+        $work = Join-Path $DestinationParent (".fork-source-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
+        $script:ForkSourceBootstrapDir = $work
+        $archive = Join-Path $work "source.zip"
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $archive -UseBasicParsing -ErrorAction Stop | Out-Null
+        $rootName = "darbot-unsloth-$commit"
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+        try {
+            foreach ($entry in $zip.Entries) {
+                $name = $entry.FullName
+                if (-not $name.StartsWith("$rootName/", [System.StringComparison]::Ordinal) -or
+                    $name.Contains("\") -or $name.Contains(":") -or
+                    ($name.Split("/") -contains "..") -or ($name.Split("/") -contains ".") -or
+                    ($name.Split("/") | Where-Object { $_.EndsWith(" ") -or $_.EndsWith(".") })) {
+                    throw "The fork archive contains an unsafe or unexpected path."
+                }
+            }
+        } finally { $zip.Dispose() }
+        $extracted = Join-Path $work "source"
+        Expand-Archive -LiteralPath $archive -DestinationPath $extracted -ErrorAction Stop
+        $checkout = Join-Path $extracted $rootName
+        foreach ($required in @(
+            "pyproject.toml", "unsloth\__init__.py", "unsloth_cli\__init__.py",
+            "studio\install_zoo.py", "studio\python_policy.py", "studio\install_python_stack.py",
+            "studio\backend\vendor\unsloth_zoo_compat\pyproject.toml"
+        )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $checkout $required) -PathType Leaf)) {
+                throw "The published fork commit lacks $required. Use --local with the complete maintained checkout; no released PyPI fallback is supported."
+            }
+        }
+        $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        return [pscustomobject]@{
+            Checkout = $checkout
+            Spec = "unsloth @ $archiveUrl#sha256=$digest"
+        }
+    }
+
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.2" }
+    $_unslothReleaseInstallSpec = if ($StudioLocalInstall) { $RepoRoot } else { "" }
+    if ($StudioLocalInstall) {
+        $ZooHelper = Join-Path $RepoRoot "studio\install_zoo.py"
+        $ZooSource = Join-Path $RepoRoot "studio\backend\vendor\unsloth_zoo_compat"
+    } else {
+        try {
+            $forkSource = Get-MaintainedForkSourceArchive -DestinationParent $StudioHome
+        } catch {
+            return (Exit-InstallFailure "Could not obtain the maintained fork source: $($_.Exception.Message)")
+        }
+        $_unslothReleaseInstallSpec = $forkSource.Spec
+        $ZooHelper = Join-Path $forkSource.Checkout "studio\install_zoo.py"
+        $ZooSource = Join-Path $forkSource.Checkout "studio\backend\vendor\unsloth_zoo_compat"
+    }
+    if ($SkipTorch) {
+        $_unslothNoTorchInstallSpec = if ($StudioLocalInstall) {
+            "${RepoRoot}[studio]"
+        } else {
+            $_unslothReleaseInstallSpec -replace '^unsloth @ ', 'unsloth[studio] @ '
+        }
+        $NoTorchConstraints = Join-Path (Split-Path -Parent $ZooHelper) "backend\requirements\no-torch-constraints.txt"
+        if (-not (Test-Path -LiteralPath $NoTorchConstraints -PathType Leaf)) {
+            return (Exit-InstallFailure "The selected fork source is missing its no-torch exclusion constraints.")
+        }
+        $NoTorchConstraintArgs = @("--constraint", $NoTorchConstraints)
+        substep "GGUF-only mode: deferring Zoo and Torch-dependent packages."
+        $zooBootstrapExit = 0
+    } else {
+        $ZooBootstrapArgs = @($ZooHelper, "--python", $VenvPython, "--installer", "uv")
+        $ZooConstraints = Join-Path (Split-Path -Parent $ZooHelper) "backend\requirements\single-env\constraints.txt"
+        if (Test-Path -LiteralPath $ZooConstraints -PathType Leaf) {
+            $ZooBootstrapArgs += @("--constraints", $ZooConstraints)
+        }
+        $zooBootstrapExit = Invoke-InstallCommand -Label "bootstrap maintained Zoo companion" {
+            $savedPath = $env:PATH
+            try {
+                $env:PATH = (Split-Path -Parent $script:UvExe) + ";" + $env:PATH
+                & $VenvPython @ZooBootstrapArgs
+                if ($LASTEXITCODE -eq 0 -and -not $StudioLocalInstall) {
+                    $ZooRefreshConstraints = @()
+                    if (Test-Path -LiteralPath $ZooConstraints -PathType Leaf) {
+                        $ZooRefreshConstraints = @("--constraint", $ZooConstraints)
+                    }
+                    # Fork commits may share a Zoo version; refresh only this selected source.
+                    & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth-zoo @ZooRefreshConstraints $ZooSource
+                }
+            } finally { $env:PATH = $savedPath }
+        }
+    }
+    if ($zooBootstrapExit -ne 0) { return (Exit-InstallFailure "Could not bootstrap maintained Zoo companion" $zooBootstrapExit) }
+    $LocalCoreOverlayArgs = if ($SkipTorch) {
+        @("-e", "${RepoRoot}[studio]") + $NoTorchConstraintArgs
+    } else {
+        @("-e", $RepoRoot, "--no-deps")
+    }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
-            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
-            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            # Core's base dependencies are CLI-only; Zoo belongs to the ML profile.
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs --reinstall-package unsloth "$_unslothNoTorchInstallSpec" }
             if ($baseInstallExit -eq 0) {
-                # Resolve pydantic WITH deps so pip pins pydantic-core
-                # to the matching version (no-torch-runtime.txt below
-                # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs -r $NoTorchReq }
+                } else {
+                    return (Exit-InstallFailure "The selected fork source is missing its GGUF runtime requirements.")
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" $ZooSource }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5774,24 +5990,26 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython @LocalCoreOverlayArgs }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
-            if ($zooOverlayExit -ne 0) {
-                Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
-                return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
+            if (-not $SkipTorch) {
+                substep "overlaying maintained local unsloth-zoo..."
+                $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay maintained unsloth-zoo" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $ZooSource }
+                if ($zooOverlayExit -ne 0) {
+                    Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
+                }
             }
         }
     } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
         # Bounded default trio (torch 2.11 line), hoisted so release preservation uses it as the
         # route window. torchaudio 2.11 dropped its torch pin, so a bare companion can drift.
-        $_pinTorchSpec = "torch>=2.4,<2.12.0"
-        $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
-        $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
+        $_pinTorchSpec = "torch==2.14.0"
+        $_pinVisionSpec = "torchvision==0.29.0"
+        $_pinAudioSpec = "torchaudio==2.11.0"
         # Release preservation, after every floor choice. Exported as UNSLOTH_KEPT_TORCH.
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
@@ -5812,10 +6030,10 @@ exit 0
         } elseif ($ROCmIndexUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $ROCmIndexUrl)..."
-            $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+            $torchSpec = "torch==2.14.0"
             # Pin companions to $torchSpec: bare names can resolve an ABI-incompatible pair.
-            $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-            $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $visionSpec = "torchvision==0.29.0"
+            $audioSpec = "torchaudio==2.11.0"
             if ($script:PrevTorchPin) {
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install --python $VenvPython --force-reinstall $_keptTorch $_keptVision $_keptAudio --default-index $ROCmIndexUrl }
@@ -5837,7 +6055,7 @@ exit 0
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
                 # No kept-release attempt: the ROCm attempts resolve or clear the pin first.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.12.0" "torchvision>=0.19,<0.27.0" "torchaudio>=2.4,<2.12.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall "torch==2.14.0" "torchvision==0.29.0" "torchaudio==2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -5862,10 +6080,10 @@ exit 0
             # rather than abort -- the pin-only route reaches this branch on an arm64 interpreter.
             $VenvPlatform = Get-VenvPlatformTag -PythonExe $VenvPython
             $_xpuSpecs = Get-XpuTorchSpecs -Platform $VenvPlatform
-            $_xpuCpuSpecs = @("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0", "torchaudio>=2.4,<2.12.0")
+            $_xpuCpuSpecs = @("torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0")
             if ($VenvPlatform -eq "win-arm64") {
                 substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
-                $_xpuCpuSpecs = @("torch>=2.4,<2.12.0", "torchvision>=0.19,<0.27.0")
+                $_xpuCpuSpecs = @("torch==2.14.0", "torchvision==0.29.0")
             }
             # The kept trio follows $_xpuSpecs' shape so win-arm64 still omits torchaudio.
             if ($script:PrevTorchPin) {
@@ -5944,38 +6162,37 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
-            # No-torch: install unsloth + unsloth-zoo with --no-deps, then
-            # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs --reinstall-package unsloth "$_unslothNoTorchInstallSpec" }
             if ($baseInstallExit -eq 0) {
-                # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython @NoTorchConstraintArgs -r $NoTorchReq }
+                } else {
+                    return (Exit-InstallFailure "The selected fork source is missing its GGUF runtime requirements.")
                 }
             }
         } elseif ($StudioLocalInstall) {
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" $ZooSource }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.9.1" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" $ZooSource }
             }
         } else {
-            $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
+            $_unslothPkg = if ($PackageName -eq "unsloth") { $_unslothReleaseInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth -- "$_unslothPkg" }
             }
         }
         if ($baseInstallExit -ne 0) {
@@ -5985,16 +6202,18 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython @LocalCoreOverlayArgs }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
-            if ($zooOverlayExit -ne 0) {
-                Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
-                return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
+            if (-not $SkipTorch) {
+                substep "overlaying maintained local unsloth-zoo..."
+                $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay maintained unsloth-zoo" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $ZooSource }
+                if ($zooOverlayExit -ne 0) {
+                    Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
+                }
             }
         }
     } else {
@@ -6002,31 +6221,35 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.9.1" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython $ZooSource "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython @LocalCoreOverlayArgs }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            substep "overlaying maintained local unsloth-zoo..."
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay maintained unsloth-zoo" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $ZooSource }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
+            $_unslothPkg = if ($PackageName -eq "unsloth") { $_unslothReleaseInstallSpec } else { $PackageName }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --torch-backend=auto -- "$_unslothPkg" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
+    }
+
+    if ($StudioLocalInstall -and $env:UNSLOTH_CI_SOURCE_OVERLAY) {
+        substep "CI: overlaying source checkout (completed, editable): $RepoRoot"
     }
 
     # ── Intel XPU: bitsandbytes must carry XPU kernels ──
@@ -6084,9 +6307,9 @@ sys.exit(2 if conflict else (0 if installed else 1))
             if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
                 if ($expectedTorchTag -eq 'rocm' -and $ROCmIndexUrl) {
                     # A migrated venv can keep a stale CPU torch the fresh ROCm path would replace.
-                    $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-                    $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-                    $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    $rocmSpec = "torch==2.14.0"
+                    $visionSpec = "torchvision==0.29.0"
+                    $audioSpec = "torchaudio==2.11.0"
                     # Kept-release substitution, as install.sh's _install_torch_default_index does.
                     $_rocmKept = $false
                     if ($script:PrevTorchPin) {
@@ -6110,7 +6333,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: reinstall the triplet with the default 2.11-line trio.
-                    $_fixTorchSpec = "torch>=2.4,<2.12.0"; $_fixVisionSpec = "torchvision>=0.19,<0.27.0"; $_fixAudioSpec = "torchaudio>=2.4,<2.12.0"
+                    $_fixTorchSpec = "torch==2.14.0"; $_fixVisionSpec = "torchvision==0.29.0"; $_fixAudioSpec = "torchaudio==2.11.0"
                     $_cudaKept = $false
                     if ($script:PrevTorchPin) {
                         $_origFixTorchSpec = $_fixTorchSpec; $_origFixVisionSpec = $_fixVisionSpec; $_origFixAudioSpec = $_fixAudioSpec
@@ -6264,34 +6487,6 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── CI only: overlay a source checkout over the package just installed ──
-    # Mirrors install.sh. Not a consumer knob: no switch, absent from the usage text,
-    # ignored unless UNSLOTH_CI_SOURCE_OVERLAY names a directory with a pyproject.toml.
-    #
-    # The clean-machine legs run THIS script from a branch but install unsloth from
-    # PyPI, the consumer path, so everything Python-side (studio/setup.ps1,
-    # install_python_stack.py and every requirements/constraints file they reach via
-    # Path(__file__)) would be the released wheel's and a branch could not be
-    # validated. The `studio setup` handoff below goes through the CLI, and an
-    # editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py resolve to
-    # the working tree by PEP 660 __file__, so setup.ps1 comes from this ref. NOT
-    # --local: that also installs `unsloth-zoo @ git+https://...`, which genuinely needs
-    # the git these legs remove; editable + --no-deps resolves and clones nothing, so it
-    # survives git, cmake and MSVC all missing.
-    if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
-        $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
-        if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
-            Write-StudioLine "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
-            return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
-        }
-        substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
-        # Retry: the editable build fetches its backend from PyPI, same network risk.
-        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { & $script:UvExe pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
-        if ($CiOverlayExit -ne 0) {
-            return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
-        }
-    }
-
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
@@ -6414,10 +6609,18 @@ sys.exit(2 if conflict else (0 if installed else 1))
         # answer, and handing it down would forward an arch nothing here detected.
         Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
     }
+    $previousCoreTrackingRef = $env:UNSLOTH_CORE_TRACKING_REF
+    $hadPreviousCoreTrackingRef = ($null -ne $previousCoreTrackingRef)
+    $env:UNSLOTH_CORE_TRACKING_REF = if ($StudioLocalInstall) { "pinned" } else { "main" }
     try {
         Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
+        if ($hadPreviousCoreTrackingRef) {
+            $env:UNSLOTH_CORE_TRACKING_REF = $previousCoreTrackingRef
+        } else {
+            Remove-Item Env:UNSLOTH_CORE_TRACKING_REF -ErrorAction SilentlyContinue
+        }
         if ($hadPreviousUnslothStudioHome) {
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
         } else {
@@ -6569,7 +6772,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     Refresh-SessionPath  # sync current session with registry
     Complete-StudioVenvRollback
     $studioVenvReplacementCommitted = $true
-    Remove-StaleStudioVenvRollbacks
+    if (-not $ExplicitVenvDir) { Remove-StaleStudioVenvRollbacks }
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
@@ -6719,6 +6922,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
 
 # Under `irm | iex` the script scope IS the caller's session; an earlier value must not leak.
 $script:TorchOverridesFile = $null
+$script:ForkSourceBootstrapDir = $null
 try {
     Install-UnslothStudio @args
 } finally {
@@ -6728,5 +6932,9 @@ try {
     if ($script:TorchOverridesFile) {
         Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
         $script:TorchOverridesFile = $null
+    }
+    if ($script:ForkSourceBootstrapDir) {
+        Remove-Item -LiteralPath $script:ForkSourceBootstrapDir -Recurse -Force -ErrorAction SilentlyContinue
+        $script:ForkSourceBootstrapDir = $null
     }
 }

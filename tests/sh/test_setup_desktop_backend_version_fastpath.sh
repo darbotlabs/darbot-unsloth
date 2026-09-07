@@ -107,7 +107,19 @@ EOF
 chmod +x "$VENV_DIR/bin/python"
 
 # Mock install_manifest to return ok: True so manifest check passes
-printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/install_manifest.py"
+cat > "$WORK/install_manifest.py" <<'PY'
+import os
+from pathlib import Path
+
+def verify_install(**kwargs):
+    return {"ok": True}
+
+def venv_root():
+    return Path(os.environ["TEST_SOURCE_VENV"])
+
+def _installed_metadata_records(name):
+    return []
+PY
 
 eval_fastpath() {
     local installed_ver="$1"
@@ -158,6 +170,134 @@ check "installed older than desktop requirement (2026.8.14 < 2026.8.15)" \
 # 4. Without packaging, a suffix cannot be ordered safely, so force the dependency pass.
 check "post-release requirement forces dependency pass without packaging" \
     "$(eval_fastpath '2026.8.15' '2026.8.15' '2026.8.15.post1')" "false"
+
+echo "Testing source-registry tracking before the version fastpath:"
+TRACKING_BLK="$WORK/tracking_blk.sh"
+sed -n '/^_SKIP_PYTHON_DEPS=false/,/^_PKG_NAME=/p' "$SETUP_SH" | sed '$d' > "$TRACKING_BLK"
+grep -q '_core_tracking_intent(stack._core_repair_source' "$TRACKING_BLK" \
+    || drift "the source-tracking guard was not extracted"
+bash -n "$TRACKING_BLK" || drift "the source-tracking guard is invalid"
+
+# Load the actual stdlib-only source/provenance functions, not a copied resolver.
+# The fake interpreter has no site-packages, so unrelated installer imports stay out.
+cat > "$WORK/install_python_stack.py" <<'PY'
+import ast
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.request
+
+import install_manifest
+
+SCRIPT_DIR = install_manifest.venv_root() / "lib" / "site-packages" / "studio"
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+functions = {
+    "_core_source_record", "_core_source_from_record", "_core_source_payload",
+    "_remembered_core_source", "_core_tracking_intent", "_core_repair_source",
+}
+constants = {"_CORE_SOURCE_REGISTRY", "_CORE_CHECKOUT_FILES"}
+nodes = []
+found = set()
+source = Path(os.environ["TEST_REAL_STACK"])
+for node in ast.parse(source.read_text(encoding="utf-8")).body:
+    if isinstance(node, ast.FunctionDef) and node.name in functions:
+        nodes.append(node)
+        found.add(node.name)
+    elif isinstance(node, ast.Assign):
+        names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        if names & constants:
+            nodes.append(node)
+            found.update(names & constants)
+if found != functions | constants:
+    raise RuntimeError(f"Source resolver extraction drifted: {(functions | constants) - found}")
+exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), globals())
+PY
+
+eval_source_tracking() {
+    local source_json="$1"
+    (
+        SCRIPT_DIR="$WORK"
+        export TEST_SOURCE_VENV="$VENV_DIR"
+        export TEST_REAL_STACK="$(dirname "$SETUP_SH")/install_python_stack.py"
+        export UNSLOTH_CORE_TRACKING_REF="${4:-}"
+        _COLAB_NO_VENV=false
+        SKIP_STUDIO_BASE="${2:-0}"
+        STUDIO_LOCAL_INSTALL="${3:-0}"
+        if [ -n "$source_json" ]; then
+            printf '%s\n' "$source_json" > "$VENV_DIR/.unsloth-studio-source.json"
+        else
+            rm -f "$VENV_DIR/.unsloth-studio-source.json"
+        fi
+        metadata="$VENV_DIR/lib/site-packages/unsloth-2026.9.2.dist-info"
+        rm -rf "$metadata"
+        if [ -n "${5:-}" ]; then
+            mkdir -p "$metadata"
+            printf 'Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.2\n' > "$metadata/METADATA"
+            printf '%s\n' "$5" > "$metadata/direct_url.json"
+        fi
+        substep() { :; }
+        . "$TRACKING_BLK"
+        if [ "$_SKIP_VERSION_CHECK" != true ] && [ "$SKIP_STUDIO_BASE" != 1 ] \
+            && [ "$STUDIO_LOCAL_INSTALL" != 1 ]; then
+            _SKIP_PYTHON_DEPS="$(eval_fastpath '2026.9.2' '2026.9.2')"
+        fi
+        echo "$_SKIP_PYTHON_DEPS"
+    )
+}
+COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LEGACY_SOURCE="{\"schema\":1,\"core\":{\"kind\":\"archive\",\"commit\":\"$COMMIT\"}}"
+PINNED_SOURCE="{\"schema\":1,\"tracking\":\"pinned\",\"core\":{\"kind\":\"archive\",\"commit\":\"$COMMIT\"}}"
+TRACKED_SOURCE="{\"schema\":1,\"tracking\":\"main\",\"core\":{\"kind\":\"archive\",\"commit\":\"$COMMIT\"}}"
+PEP610_MAIN="{\"url\":\"https://github.com/darbotlabs/darbot-unsloth.git\",\"vcs_info\":{\"commit_id\":\"$COMMIT\",\"requested_revision\":\"main\"}}"
+PEP610_DEFAULT="{\"url\":\"https://github.com/darbotlabs/darbot-unsloth.git\",\"vcs_info\":{\"commit_id\":\"$COMMIT\"}}"
+PEP610_PIN="{\"url\":\"https://github.com/darbotlabs/darbot-unsloth.git\",\"vcs_info\":{\"commit_id\":\"$COMMIT\",\"requested_revision\":\"$COMMIT\"}}"
+CHECKOUT="$WORK/checkout"
+mkdir -p "$CHECKOUT/studio/backend/vendor/unsloth_zoo_compat"
+for file in pyproject.toml studio/install_zoo.py studio/python_policy.py \
+    studio/backend/vendor/unsloth_zoo_compat/pyproject.toml; do
+    printf 'fixture\n' > "$CHECKOUT/$file"
+done
+PEP610_EDITABLE=$(python3 -c 'import json,sys; from pathlib import Path; print(json.dumps({"url":Path(sys.argv[1]).resolve().as_uri(),"dir_info":{"editable":True}}))' "$CHECKOUT")
+check "main tracking advances despite identical package versions" \
+    "$(eval_source_tracking "$TRACKED_SOURCE")" false
+check "pinned source retains the package-version fastpath" \
+    "$(eval_source_tracking "$PINNED_SOURCE")" true
+check "legacy unmarked archive without VCS intent remains fixed" \
+    "$(eval_source_tracking "$LEGACY_SOURCE")" true
+check "explicit main overrides a retained pinned archive" \
+    "$(eval_source_tracking "$PINNED_SOURCE" 0 0 main)" false
+check "registryless PEP610 main reaches the tracked updater" \
+    "$(eval_source_tracking '' 0 0 '' "$PEP610_MAIN")" false
+check "registryless implicit fork default reaches the tracked updater" \
+    "$(eval_source_tracking '' 0 0 '' "$PEP610_DEFAULT")" false
+check "explicit registry pin wins over PEP610 main intent" \
+    "$(eval_source_tracking "$PINNED_SOURCE" 0 0 '' "$PEP610_MAIN")" true
+check "registryless PEP610 commit remains pinned" \
+    "$(eval_source_tracking '' 0 0 '' "$PEP610_PIN")" true
+check "editable PEP610 stays fixed despite inherited main" \
+    "$(eval_source_tracking '' 0 0 main "$PEP610_EDITABLE")" true
+check "explicit pin overrides retained main tracking" \
+    "$(eval_source_tracking "$TRACKED_SOURCE" 0 0 pinned)" true
+check "missing registry and provenance reach shared repair" \
+    "$(eval_source_tracking '')" false
+check "malformed registry cannot be certified current" \
+    "$(eval_source_tracking '{broken')" false
+check "invalid registry shape reaches shared repair" \
+    "$(eval_source_tracking '[]')" false
+check "bootstrap already bypasses version checks without remote resolution" \
+    "$(eval_source_tracking "$TRACKED_SOURCE" 1)" false
+check "explicit checkout already reaches its pinned shared pass" \
+    "$(eval_source_tracking "$TRACKED_SOURCE" 0 1)" false
+
+echo "Testing shared-base Transformers installation:"
+check "fixed shadows are no longer pre-provisioned" \
+    "$(grep -Eq 'VENV_T5_|fast_install_sidecar|_NEED_T5_INSTALL' "$SETUP_SH" && echo false || echo true)" true
+check "legacy repository environments are not deleted" \
+    "$(grep -Eq 'rm -rf "\$REPO_ROOT/\.venv' "$SETUP_SH" && echo false || echo true)" true
+check "the shared installer supplies base dependencies" \
+    "$(grep -qF 'python "$SCRIPT_DIR/install_python_stack.py"' "$SETUP_SH" && echo true || echo false)" true
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

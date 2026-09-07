@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { ColumnDef } from "@tanstack/react-table";
+import type { DataTableColumnDef as ColumnDef } from "@/components/ui/data-table-model";
 import {
   CheckmarkCircle02Icon,
   Flag02Icon,
@@ -143,8 +143,8 @@ export function ExecutionsView({
     return visibleDatasetColumnNames.map((name) => ({
       accessorKey: name,
       header: name,
-      cell: ({ getValue }) => {
-        const rawValue = getValue();
+      cell: (context) => {
+        const rawValue = context.cell.getValue();
         const imagePreview = resolveImagePreview(rawValue);
         if (imagePreview?.kind === "ready") {
           return (

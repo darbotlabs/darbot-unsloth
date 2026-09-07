@@ -3,11 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The Intel XPU torch trio must be identical in every place that installs it: install.sh,
 # studio/install_python_stack.py (the `unsloth studio update` route) and install.ps1. A drifted
-# floor gives a different torch depending on which command the user ran, and the 2.6 floor is
-# not cosmetic -- unsloth/models/_utils.py raises at import for an XPU device below it.
+# pin gives a different torch depending on which command the user ran.
 #
 # Windows on ARM legitimately drops torchaudio (no win_arm64 wheel), so install.ps1 is checked
-# for the floors rather than for an identical trio.
+# for package pins rather than for an identical trio.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,9 +26,9 @@ check() {
     fi
 }
 
-TORCH='torch>=2.6,<2.11.0'
-VISION='torchvision>=0.21,<0.26.0'
-AUDIO='torchaudio>=2.6,<2.11.0'
+TORCH='torch==2.14.0'
+VISION='torchvision==0.29.0'
+AUDIO='torchaudio==2.11.0'
 
 # install.sh sets these in the xpu arm of its index-leaf case.
 sh_has() { grep -qF "\"$1\"" "$INSTALL_SH" && echo yes || echo no; }

@@ -842,10 +842,7 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
 }
 
 fn ensure_artifact_root(kind: NativeArtifactKind, canonical_path: &Path) -> Result<(), String> {
-    let Some(home) = dirs::home_dir() else {
-        return Err("Could not determine home directory.".to_string());
-    };
-    let studio = home.join(".unsloth").join("studio");
+    let studio = crate::studio_paths::selected_root()?;
     let allowed_root = match kind {
         NativeArtifactKind::TrainingOutput => studio.join("outputs"),
         NativeArtifactKind::Export => studio.join("exports"),
@@ -940,6 +937,12 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
     }
 
     let mut sensitive_roots = Vec::new();
+    sensitive_roots.push(crate::studio_paths::selected_root()?);
+    if let Some(environment) =
+        crate::process::managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR"))?
+    {
+        sensitive_roots.push(environment);
+    }
     if let Some(home) = dirs::home_dir() {
         if same_native_path(path, &home) {
             return Err(

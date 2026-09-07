@@ -269,7 +269,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { flushResourcesSync } from "@assistant-ui/tap";
+import { flushTapSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
@@ -3868,7 +3868,7 @@ const Composer: FC<{
               return;
             }
             void composer.clearAttachments();
-            flushResourcesSync(() => {
+            flushTapSync(() => {
               composer.setText("");
             });
             clearStoredDraft();
@@ -3978,7 +3978,7 @@ const Composer: FC<{
         if (cleared.trim() !== queuedPrompt) {
           return;
         }
-        flushResourcesSync(() => {
+        flushTapSync(() => {
           aui.composer().setText("");
         });
         clearStoredDraft();
@@ -4613,7 +4613,7 @@ const Composer: FC<{
         // Live, not composerText: a late DOM write carries exactly what the
         // textarea held, whitespace and all, and that is what must be armed.
         const visibleBeforeWrap = aui.composer().getState().text;
-        flushResourcesSync(() => {
+        flushTapSync(() => {
           aui
             .composer()
             .setText(
@@ -4818,7 +4818,7 @@ const Composer: FC<{
                     if (cleared.trim() !== queuedPrompt) {
                       return;
                     }
-                    flushResourcesSync(() => {
+                    flushTapSync(() => {
                       aui.composer().setText("");
                     });
                     clearStoredDraft();
@@ -5042,7 +5042,7 @@ function useImeComposerInputHandlers({
           return false;
         }
       }
-      flushResourcesSync(() => {
+      flushTapSync(() => {
         composer.setText(value);
       });
       return true;

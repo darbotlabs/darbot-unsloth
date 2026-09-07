@@ -87,7 +87,17 @@ fn read_journal(path: &Path) -> Option<ActivationJournal> {
 }
 
 pub(crate) fn pending_versions(home: &Path) -> Option<StagedVersions> {
+    if !uses_default_environment() {
+        return None;
+    }
     read_journal(&home.join(PREV_DIR).join(PENDING_MARKER)).map(|journal| journal.versions)
+}
+
+pub(crate) fn uses_default_environment() -> bool {
+    matches!(
+        crate::process::managed_env_override(std::env::var_os("UNSLOTH_ENV_DIR")),
+        Ok(None)
+    )
 }
 
 fn write_journal(path: &Path, journal: &ActivationJournal) -> Result<(), String> {
@@ -117,6 +127,9 @@ fn write_atomic(path: &Path, body: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn status(home: &Path) -> StagedUpdateStatus {
+    if !uses_default_environment() {
+        return StagedUpdateStatus::with("none", None);
+    }
     let stage = home.join(STAGE_DIR);
     if let Some(versions) = read_versions(&stage.join(READY_MARKER)) {
         return StagedUpdateStatus::with("ready", Some(versions));
@@ -131,10 +144,18 @@ pub(crate) fn status(home: &Path) -> StagedUpdateStatus {
 }
 
 pub(crate) fn discard(home: &Path) {
+    if !uses_default_environment() {
+        return;
+    }
     let _ = fs::remove_dir_all(home.join(STAGE_DIR));
 }
 
 pub(crate) fn reconcile_at_launch(home: &Path, shell_version: &str) {
+    // An explicit environment is rebuilt in place, never swapped with the
+    // default Studio home's staged runtime (including old pending rollbacks).
+    if !uses_default_environment() {
+        return;
+    }
     remove_stale_trash(home);
     if let Err(error) = roll_back_unconfirmed(home) {
         // Activating now would delete .update-prev, and a rollback that failed part
@@ -172,6 +193,9 @@ fn remove_stale_trash(home: &Path) {
 }
 
 pub(crate) fn confirm_activated(home: &Path, observed_backend_version: &str) -> bool {
+    if !uses_default_environment() {
+        return false;
+    }
     let prev = home.join(PREV_DIR);
     let Some(versions) = read_versions(&prev.join(PENDING_MARKER)) else {
         return false;

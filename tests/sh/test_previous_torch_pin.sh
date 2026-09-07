@@ -37,6 +37,11 @@ assert_eq() {
 
 unset UNSLOTH_TORCH_UPGRADE
 
+echo "=== exact current policy preserves only its declared release ==="
+assert_eq "exact CUDA release retained" "torch==2.14.0" "$(_previous_torch_pin '2.14.0+cu130' 'torch==2.14.0')"
+assert_eq "different patch rejected" "" "$(_previous_torch_pin '2.14.1+cu130' 'torch==2.14.0')"
+assert_eq "older minor rejected" "" "$(_previous_torch_pin '2.13.0+cpu' 'torch==2.14.0')"
+
 echo "=== _previous_torch_pin: in-window releases are kept, any flavor ==="
 assert_eq "cu126 wheel"                  "torch==2.10.0" "$(_previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
 assert_eq "cu130 wheel"                  "torch==2.10.0" "$(_previous_torch_pin '2.10.0+cu130' 'torch>=2.4,<2.12.0')"
@@ -147,10 +152,20 @@ assert_eq "ROCm repairs routed through the kept-release helper" "yes" "$([ "$_re
 # The wrong-flavor repair must use the helper too (it runs under set -e, so a
 # direct uv call with an unresolvable pin would abort the whole installer).
 assert_eq "flavor repair routed through the kept-release helper" "yes" "$(grep -q '_install_torch_default_index \\' "$INSTALL_SH" && grep -q -- '--reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio' "$INSTALL_SH" && echo yes)"
-# The kept-release install must pair the companions with the kept minor:
-# torchaudio no longer exact-pins torch, so unconstrained it resolves a newer
-# mismatched build (verified: torch==2.9.0 pulled torchaudio 2.11.0 on cu130).
-assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q 'torchaudio==2.\${_itdi_minor}.\*' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
+# Retaining Torch must not widen Vision or invent an identically numbered Audio.
+eval "$(sed -n '/^_install_torch_default_index()/,/^}/p' "$INSTALL_SH")"
+_PREV_TORCH_PIN="torch==2.14.0"
+TORCH_CONSTRAINT="torch==2.14.0"
+TORCHVISION_CONSTRAINT="torchvision==0.29.0"
+TORCHAUDIO_CONSTRAINT="torchaudio==2.11.0"
+_VENV_PY="/dedicated environment/bin/python"
+TORCH_INDEX_URL="https://download.pytorch.org/whl/cu130"
+_captured=""
+run_install_cmd_retry() { _captured="$*"; }
+_install_torch_default_index
+assert_eq "kept-release install retains exact independent companion pins" \
+    "install PyTorch (kept release) uv pip install --python $_VENV_PY torch==2.14.0 torchvision==0.29.0 torchaudio==2.11.0 --default-index $TORCH_INDEX_URL" \
+    "$_captured"
 # The Radeon direct-wheel path must also honor the pin: an exact-first kept-trio
 # attempt (exact patch, else the kept minor's newest patch, with paired
 # vision/audio) runs BEFORE the newest-trio search, and the newest-trio search

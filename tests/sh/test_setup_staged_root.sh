@@ -4,8 +4,8 @@
 # UNSLOTH_STUDIO_STAGE_ROOT redirects a background update into a copy of the
 # environment, and the whole point is that the live install keeps running and
 # keeps working if the staged one is never activated. Anything the setup scripts
-# write outside the stage root breaks that, so the two paths that delete under
-# $STUDIO_HOME have to be gated on the override.
+# write outside the stage root breaks that. Legacy environments stay untouched;
+# mutable helper runtimes and caches must respect staging.
 #
 # Source-shape assertions: driving either script to those lines needs a real
 # managed venv. Both are checked, because the failure is per-platform.
@@ -36,30 +36,18 @@ check "setup.ps1 falls back to StudioHome" \
 
 # Every venv the update writes has to follow the override, or a staged run
 # installs straight into the environment the app is running from.
-for v in VENV_DIR VENV_T5_530_DIR VENV_T5_550_DIR VENV_T5_510_DIR; do
+for v in VENV_DIR; do
     check "setup.sh points $v at RUNTIME_ROOT" \
         "$(grep -qE "^${v}=\"\\\$RUNTIME_ROOT/" "$SETUP_SH" && echo 0 || echo 1)"
 done
-for v in VenvDir VenvT5_530Dir VenvT5_550Dir VenvT5_510Dir; do
-    check "setup.ps1 points \$$v at RuntimeRoot" \
-        "$(grep -qE "^\\\$${v} = Join-Path \\\$RuntimeRoot " "$SETUP_PS1" && echo 0 || echo 1)"
-done
+check "setup.ps1 points VenvDir at RuntimeRoot" \
+    "$(grep -qE '^\$VenvDir = Join-Path \$RuntimeRoot ' "$SETUP_PS1" && echo 0 || echo 1)"
 
-# ── the two deletes under the live $STUDIO_HOME ──
-# The legacy single sidecar. Its tiered replacements land under the stage root and
-# may never be activated, so removing this during a staged run leaves the running
-# install with no sidecar at all.
-_sh_legacy=$(sed -n '/^if \[ -d "\$STUDIO_HOME\/\.venv_t5" \]; then$/,/^fi$/p' "$SETUP_SH")
-check "setup.sh guards the legacy sidecar removal on STAGE_ROOT" \
-    "$(printf '%s' "$_sh_legacy" | grep -qF '[ -z "$STAGE_ROOT" ]' && echo 0 || echo 1)"
-check "setup.sh still removes it on a live update" \
-    "$(printf '%s' "$_sh_legacy" | grep -qF 'rm -rf "$STUDIO_HOME/.venv_t5"' && echo 0 || echo 1)"
-
-_ps_legacy=$(sed -n '/^if (Test-Path -LiteralPath \$VenvT5Legacy) {$/,/^}$/p' "$SETUP_PS1")
-check "setup.ps1 guards the legacy sidecar removal on StageRoot" \
-    "$(printf '%s' "$_ps_legacy" | grep -qF 'if (-not $StageRoot)' && echo 0 || echo 1)"
-check "setup.ps1 still removes it on a live update" \
-    "$(printf '%s' "$_ps_legacy" | grep -qF 'Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force' && echo 0 || echo 1)"
+# Both installers use shared base Transformers rather than rewriting old trees.
+check "setup.sh preserves legacy sidecars during staged and live updates" \
+    "$(grep -qE 'VENV_T5_|\.venv_t5' "$SETUP_SH" && echo 1 || echo 0)"
+check "setup.ps1 preserves legacy sidecars during staged and live updates" \
+    "$(grep -qE 'VenvT5|\.venv_t5' "$SETUP_PS1" && echo 1 || echo 0)"
 
 # The WebView cache belongs to the app that is still running and rendering from it.
 check "setup.sh skips the webview cache clear while staging" \
@@ -99,7 +87,7 @@ check "setup.ps1 keeps the staging compiler cache under the stage root" \
 # scripts, so the staged branch sets PATH itself. Assert-VenvActivated then proves
 # `python` really resolves inside the stage.
 check "setup.sh activates the staged venv without sourcing the copy" \
-    "$(has "$SETUP_SH" 'elif [ -n "$STAGE_ROOT" ]; then')"
+    "$(has "$SETUP_SH" 'elif [ -n "$STAGE_ROOT" ] || [ -n "${UNSLOTH_ENV_DIR:-}" ]; then')"
 check "setup.ps1 activates the staged venv without dot-sourcing the copy" \
     "$(has "$SETUP_PS1" 'function Enter-StudioVenv {')"
 check "setup.ps1 still asserts the interpreter after activating" \

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from pathlib import Path
 from typing import Any
 
@@ -68,9 +69,23 @@ def to_jsonable(value: Any) -> Any:
 
     if np is not None:
         if isinstance(value, np.ndarray):
-            return value.tolist()
+            return to_jsonable(value.tolist())
         if isinstance(value, np.generic):
-            return value.item()
+            if np.issubdtype(value.dtype, np.floating):
+                return to_jsonable(float(value))
+            scalar = value.item()
+            return scalar if isinstance(scalar, np.generic) else to_jsonable(scalar)
+
+    try:
+        from pandas import NA, NaT
+    except ImportError:  # pragma: no cover
+        pass
+    else:
+        if value is NA or value is NaT:
+            return None
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
 
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}

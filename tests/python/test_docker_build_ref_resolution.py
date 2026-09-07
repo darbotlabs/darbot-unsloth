@@ -26,7 +26,6 @@ BUILD_SH = REPO_ROOT / "docker" / "build.sh"
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 
 UNSLOTH_SHA = "a" * 40
-ZOO_SHA = "b" * 40
 NB_SHA = "c" * 40
 
 
@@ -73,7 +72,7 @@ def _build_arg(argv: list[str], name: str) -> str:
 LS_REMOTE_STUB = f"""
 if [ "$1" = "ls-remote" ]; then
     case "$2" in
-        *unsloth-zoo*) echo -e "{ZOO_SHA}\\tHEAD" ;;
+        *unsloth-zoo*) echo "Zoo must be vendored, not fetched independently" >&2; exit 1 ;;
         *notebooks*) echo -e "{NB_SHA}\\tHEAD" ;;
         *) echo -e "{UNSLOTH_SHA}\\tHEAD" ;;
     esac
@@ -89,7 +88,7 @@ def test_the_default_main_refs_are_frozen_to_commits(tmp_path):
         "a mutable 'main' build arg is byte-identical across rebuilds, so docker "
         "reuses the cached install layer and silently ships a stale image"
     )
-    assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
+    assert not any(arg.startswith("UNSLOTH_ZOO_REF=") for arg in argv)
     # the baked notebooks are the same shape of mutable-ref RUN layer, and the
     # publish workflow already freezes this one
     assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == NB_SHA
@@ -97,10 +96,9 @@ def test_the_default_main_refs_are_frozen_to_commits(tmp_path):
 
 def test_an_explicit_tag_is_frozen_too(tmp_path):
     _proc, argv = _run(
-        tmp_path, LS_REMOTE_STUB, {"UNSLOTH_REF": "v2026.5.6", "UNSLOTH_ZOO_REF": "v2026.5.4"}
+        tmp_path, LS_REMOTE_STUB, {"UNSLOTH_REF": "v2026.5.6"}
     )
     assert _build_arg(argv, "UNSLOTH_REF") == UNSLOTH_SHA
-    assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
 
 
 def test_a_sha_is_passed_through_without_a_lookup(tmp_path):
@@ -108,10 +106,23 @@ def test_a_sha_is_passed_through_without_a_lookup(tmp_path):
     _proc, argv = _run(
         tmp_path,
         'if [ "$1" = "ls-remote" ]; then echo "ls-remote should not run" >&2; exit 3; fi\nexit 0\n',
-        {"UNSLOTH_REF": sha, "UNSLOTH_ZOO_REF": sha},
+        {"UNSLOTH_REF": sha, "UNSLOTH_NOTEBOOKS_REF": sha},
     )
     assert _build_arg(argv, "UNSLOTH_REF") == sha
-    assert _build_arg(argv, "UNSLOTH_ZOO_REF") == sha
+    assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == sha
+
+
+def test_independent_zoo_override_is_rejected_before_building(tmp_path):
+    proc = subprocess.run(
+        ["bash", str(BUILD_SH)],
+        env = {**os.environ, "UNSLOTH_ZOO_REF": "main"},
+        capture_output = True,
+        text = True,
+        cwd = tmp_path,
+        timeout = 30,
+    )
+    assert proc.returncode != 0
+    assert "Zoo is vendored with Core" in proc.stderr
 
 
 def test_an_unreachable_remote_warns_and_still_builds(tmp_path):

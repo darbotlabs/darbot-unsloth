@@ -1,6 +1,6 @@
 # Builds and publishes the Blackwell-compatible Unsloth Docker image.
 #
-# No GPU runner needed: cu128 wheels are fat binaries, the build-time check uses
+# No GPU runner needed: cu130 wheels are fat binaries, the build-time check uses
 # torch._C._cuda_getArchFlags(), and UNSLOTH_COMPILE_DISABLE=1 blocks GPU-keyed JIT.
 #
 # Required secret: DOCKER_API_KEY, a Docker Hub ORGANIZATION access token for the
@@ -27,10 +27,6 @@ on:
         description: 'unsloth git ref override (blank = dispatched branch + stable tags)'
         required: false
         default: ''
-      unsloth_zoo_ref:
-        description: 'unsloth-zoo git ref to bake in'
-        required: false
-        default: 'main'
       llama_prebuilt_tag:
         description: 'unslothai/llama.cpp prebuilt release tag to bake (blank = newest)'
         required: false
@@ -42,13 +38,13 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: unsloth/unsloth
+  IMAGE_NAME: ${{ vars.UNSLOTH_DOCKER_IMAGE }}
   # DOCKER_API_KEY is an ORGANIZATION access token, and Docker Hub authenticates an
   # OAT as the ORGANISATION, not as whoever created it. So this is the org name and
   # must stay that way: putting a person's account here fails every login, which is
   # why it is spelled out rather than left to look like an arbitrary owner field.
   # Not a secret, and named once so the four login steps cannot drift apart.
-  REGISTRY_USERNAME: unsloth
+  REGISTRY_USERNAME: ${{ vars.UNSLOTH_DOCKER_USERNAME }}
 
 # Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
 # shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
@@ -69,6 +65,7 @@ permissions:
 jobs:
   # Resolve every upstream ref ONCE, so both arch legs and Studio bake identical bits.
   prepare:
+    if: ${{ vars.UNSLOTH_DOCKER_PUBLISH == 'true' && vars.UNSLOTH_DOCKER_IMAGE != '' && vars.UNSLOTH_DOCKER_USERNAME != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -79,7 +76,6 @@ jobs:
       pin_date: ${{ steps.pin.outputs.date }}
       llama_tag: ${{ steps.llama.outputs.tag }}
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
-      zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
       notebooks_commit: ${{ steps.notebooks.outputs.commit }}
     steps:
       - name: Date of this run, for the nightly pins
@@ -138,8 +134,8 @@ jobs:
               # ls-remote exits 0 whether or not a ref matched, so a non-zero exit means
               # the remote was never reached and the fallback would hand a MUTABLE name
               # to three builds that each resolve it again.
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
-                  echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
+              if ! LS_OUT="$(git ls-remote https://github.com/darbotlabs/darbot-unsloth "$REF")"; then
+                  echo "::error::darbotlabs/darbot-unsloth unreachable; cannot freeze ref '${REF}' to a sha"
                   exit 1
               fi
               SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
@@ -147,39 +143,6 @@ jobs:
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
           echo "unsloth ref: ${SHA}"
-
-      # only when the tag exists there: unsloth's v* tags are Studio releases
-      - name: Resolve unsloth-zoo ref
-        id: zoo_ref
-        run: |
-          REF="${{ github.event.inputs.unsloth_zoo_ref }}"
-          if [ -z "$REF" ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
-              # git documents status 2 as "reached the remote, no matching ref"; any
-              # other non-zero means the lookup never happened, so swallowing both
-              # lets a transport blip pair the unsloth tag with zoo main.
-              _rc=0
-              git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
-                  "refs/tags/${{ github.ref_name }}" >/dev/null 2>&1 || _rc=$?
-              if [ "$_rc" = "0" ]; then
-                  REF="${{ github.ref_name }}"
-              elif [ "$_rc" != "2" ]; then
-                  echo "::error::unslothai/unsloth-zoo unreachable (git ls-remote exit ${_rc}); cannot tell whether it carries tag '${{ github.ref_name }}'"
-                  exit 1
-              fi
-          fi
-          REF="${REF:-main}"
-          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
-              SHA="$REF"
-          else
-              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF")"; then
-                  echo "::error::unslothai/unsloth-zoo unreachable; cannot freeze ref '${REF}' to a sha"
-                  exit 1
-              fi
-              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
-              [ -n "$SHA" ] || SHA="$REF"
-          fi
-          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "unsloth-zoo ref: ${SHA}"
 
       # one commit, so baked templates + .unsloth_template_commit match across legs
       - name: Resolve unsloth/notebooks commit
@@ -260,11 +223,10 @@ jobs:
           # Keep prose OUT of build-args: build-push-action forwards every non-empty
           # line verbatim, so a #-line becomes a bogus --build-arg.
           build-args: |
-            CUDA_VERSION=12.8.1
+            CUDA_VERSION=13.0.0
             UBUNTU_VERSION=24.04
-            PYTHON_VERSION=3.12
+            PYTHON_VERSION=3.14.7
             UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
-            UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
             UNSLOTH_NOTEBOOKS_REF=${{ needs.prepare.outputs.notebooks_commit }}
 
@@ -316,7 +278,7 @@ jobs:
           tags: |
             # only on the default branch AND with no baked input overridden on
             # dispatch, else a feature ref overwrites :core with non-main bits
-            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
             type=schedule,pattern=core-nightly-${{ needs.prepare.outputs.pin_date }}
             type=raw,value=core-build-${{ github.run_id }}
@@ -448,7 +410,6 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
             UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
-            UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
       - name: Export digest
@@ -498,8 +459,8 @@ jobs:
           # a v* tag push and bypass the default-branch-only gate below
           flavor: latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly-${{ needs.prepare.outputs.pin_date }}
             type=raw,value=build-${{ github.run_id }}
@@ -577,7 +538,7 @@ jobs:
   # also needs the repository edit permission.
   hub-readme:
     needs: merge-studio
-    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -661,7 +622,7 @@ jobs:
   # token. A dispatch with an overridden input keeps its handles, its only names.
   cleanup:
     needs: [merge, merge-studio, hub-readme, smoke-test]
-    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
+    if: ${{ always() && vars.UNSLOTH_DOCKER_PUBLISH == 'true' && vars.UNSLOTH_DOCKER_IMAGE != '' && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

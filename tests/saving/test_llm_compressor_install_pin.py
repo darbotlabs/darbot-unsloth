@@ -42,8 +42,7 @@ def test_spec_is_a_bounded_pin() -> None:
     spec = _spec_value()
     assert spec is not None, "_LLM_COMPRESSOR_SPEC must be defined at module scope"
     assert "llmcompressor" in spec, f"spec must name llmcompressor, got {spec!r}"
-    # A lower and an upper bound: pip cannot jump to an arbitrary (e.g. inflated) future release.
-    assert ">=" in spec and "<" in spec, f"spec must have lower and upper bounds, got {spec!r}"
+    assert spec == "llmcompressor==0.13.0"
 
 
 def test_ceiling_blocks_inflated_versions() -> None:
@@ -51,29 +50,26 @@ def test_ceiling_blocks_inflated_versions() -> None:
     from packaging.requirements import Requirement
 
     spec = Requirement(_spec_value()).specifier
-    assert spec.contains("0.12.0"), "the current vetted release must resolve"
+    assert spec.contains("0.13.0"), "the current published release must resolve"
     assert not spec.contains("0.999.0"), "an inflated 0.x must be blocked"
     assert not spec.contains("1.0.0"), "a new major must not be auto-installed"
-    assert not spec.contains(
-        "0.12.1"
-    ), "a higher in-range patch must be blocked (cap to the vetted patch)"
-    assert not spec.contains(
-        "0.12.999"
-    ), "a crafted higher in-range patch (e.g. on a mirror) must be blocked"
+    assert not spec.contains("0.13.1"), (
+        "a higher in-range patch must be blocked (cap to the vetted patch)"
+    )
+    assert not spec.contains("0.13.999"), (
+        "a crafted higher in-range patch (e.g. on a mirror) must be blocked"
+    )
 
 
-def test_floor_stays_compatible_with_supported_torch() -> None:
-    """Floor must stay <=0.6.0: 0.7+ need torch>=2.7, but the pinned torch can be as old as 2.4."""
+def test_pin_does_not_install_a_retired_quantizer() -> None:
+    """Old quantizers must not silently downgrade the modern stack."""
     from packaging.requirements import Requirement
     from packaging.version import Version
 
     req = Requirement(_spec_value())
     lowers = [Version(s.version) for s in req.specifier if s.operator in (">=", "==", "~=")]
     assert lowers, "spec must declare a lower bound"
-    assert max(lowers) <= Version("0.6.0"), (
-        f"floor {max(lowers)} requires a torch newer than Unsloth's minimum (2.4); "
-        "llm-compressor >0.6.0 needs torch>=2.7. Keep the floor <= 0.6.0."
-    )
+    assert max(lowers) == Version("0.13.0")
 
 
 def test_install_command_uses_pinned_spec_not_bare_name() -> None:
@@ -107,6 +103,34 @@ def test_optout_env_gate_precedes_subprocess_install() -> None:
 
     install_line = _first_lineno(fn, _is_check_call)
     assert install_line is not None, "expected a subprocess.check_call install in the function"
-    assert (
-        env_line < install_line
-    ), "the auto-install opt-out must be evaluated before any package install runs"
+    assert env_line < install_line, (
+        "the auto-install opt-out must be evaluated before any package install runs"
+    )
+
+
+def test_stack_guard_precedes_import_install_and_shadow_export():
+    def is_guard(node):
+        return (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "require_llm_compressor_compatibility"
+        )
+
+    installer = _get_function("install_llm_compressor")
+    guard = _first_lineno(installer, is_guard)
+    importer = _first_lineno(
+        installer,
+        lambda node: (
+            isinstance(node, ast.ImportFrom) and (node.module or "").startswith("llmcompressor")
+        ),
+    )
+    assert guard is not None and importer is not None and guard < importer
+    exporter = _get_function("_unsloth_save_compressed_tensors")
+    guard = _first_lineno(exporter, is_guard)
+    shadow = _first_lineno(
+        exporter,
+        lambda node: (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "_compressed_quantize_pythonpath"
+        ),
+    )
+    assert guard is not None and shadow is not None and guard < shadow

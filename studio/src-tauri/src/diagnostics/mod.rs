@@ -54,10 +54,12 @@ pub(crate) fn new_id(prefix: &str) -> String {
 }
 
 pub fn studio_dir() -> PathBuf {
-    dirs::home_dir()
+    // Diagnostics remain available for an invalid launch configuration. Runtime
+    // ownership/auth use the fallible resolver, never this diagnostic fallback.
+    crate::studio_paths::selected_root().unwrap_or_else(|_| dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".unsloth")
-        .join("studio")
+        .join("studio"))
 }
 
 pub fn logs_dir() -> PathBuf {

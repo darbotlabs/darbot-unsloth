@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Git is optional on the consumer Windows path, but still required for source builds."""
+"""Vendored Core/Zoo need no Git; llama.cpp source builds still require it."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from unsloth_pwsh_runner import run_pwsh
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
-_START = "$gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')"
+_START = "$gitNeeded = $false"
 _TAIL = "if (-not $_localLlamaBuilt) {"
 
 
@@ -91,7 +91,8 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
     [
         # The consumer install: prebuilt wheels and a prebuilt llama.cpp, so no git.
         ({}, False),
-        ({"STUDIO_LOCAL_INSTALL": "1"}, True),
+        ({"STUDIO_LOCAL_INSTALL": "1"}, False),
+        ({"STUDIO_LOCAL_INSTALL": "1", "UNSLOTH_CI_SOURCE_OVERLAY": "checkout"}, False),
         ({"UNSLOTH_LLAMA_FORCE_COMPILE": "1"}, True),
         ({"UNSLOTH_LLAMA_PR": "1234"}, True),
         # PR_FORCE only forces a build for a positive integer.
@@ -105,7 +106,7 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
         ({"UNSLOTH_LLAMA_TAG": "b8635"}, False),
     ],
 )
-def test_git_is_required_only_for_local_and_source_builds(env, expected):
+def test_git_is_required_only_for_llama_source_builds(env, expected):
     assert _needs_git(env) is expected
 
 

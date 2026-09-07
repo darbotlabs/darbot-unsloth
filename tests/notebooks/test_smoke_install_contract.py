@@ -74,6 +74,10 @@ def test_the_smoke_job_runs_the_interpreter_the_snapshot_names():
         if "setup-python" in str(s.get("uses", ""))
     ]
     assert pins, f"{JOB} does not pin an interpreter at all"
+    if want != "3.14":
+        assert set(pins) == {"3.14.7"}
+        assert "vars.UNSLOTH_COLAB_PYTHON314_VALIDATED == 'true'" in _job()["if"]
+        return
     assert set(pins) == {want}, (
         f"{JOB} pins Python {pins} but the Colab snapshot was captured on {want}. A pin "
         f"carrying a Requires-Python floor above the runner cannot resolve, and one "

@@ -31,9 +31,9 @@ awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$I
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
 # An extraction that lost any of the three moving parts would make cases below pass vacuously.
 _arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
-[ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
+[ "$_arms" = "4" ] || { echo "FATAL: expected 4 escape arms, extracted $_arms" >&2; exit 1; }
 for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton _setup_pin_known_nonxpu \
-             _setup_known_nonxpu_leaf; do
+             _setup_known_nonxpu_leaf _setup_pin_is_rocm _setup_rocm_triton_ready; do
     grep -q "$_need" "$WORK/blk.sh" || { echo "FATAL: extraction lost $_need" >&2; exit 1; }
 done
 bash -n "$WORK/blk.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
@@ -63,6 +63,11 @@ make_venv() {
     # The XPU distributions must NOT count as the shadowing one.
     [ "$2" = "yes" ] && mkdir -p "$_sp/triton-3.7.1.dist-info"
     [ "$2" = "xpuonly" ] && mkdir -p "$_sp/pytorch_triton_xpu-3.5.0.dist-info" "$_sp/triton_xpu-3.6.0.dist-info"
+    case "$2" in
+        rocm|rocm-generic) mkdir -p "$_sp/triton_rocm-3.8.0.dist-info" ;;
+        oldrocm) mkdir -p "$_sp/triton_rocm-3.7.0.dist-info" ;;
+    esac
+    [ "$2" = "rocm-generic" ] && mkdir -p "$_sp/triton-3.8.0.dist-info"
     printf '%s' "$_v"
 }
 
@@ -104,10 +109,11 @@ check "no pin, no venv at all"  "$(escape "$WORK/nope" "")" true
 echo "an explicit xpu pin still repairs a mismatched wheel"
 check "pin + cpu wheel"        "$(escape "$(make_venv '2.9.1+cpu' no h)" "$XPU")" false
 check "pin + no torch"         "$(escape "$(make_venv '' no i)" "$XPU")" false
-# 2.6 is the floor (unsloth raises at import for an XPU device below it) and 2.11 the ceiling.
+# Old supported releases must now route through the Torch 2.14 repair.
 check "pin + 2.5+xpu below floor" "$(escape "$(make_venv '2.5.1+xpu' no j)" "$XPU")" false
-check "pin + 2.11+xpu above ceiling" "$(escape "$(make_venv '2.11.0+xpu' no k)" "$XPU")" false
-check "pin + supported wheel, clean" "$(escape "$(make_venv '2.9.1+xpu' no l)" "$XPU")" true
+check "pin + 2.11+xpu below current floor" "$(escape "$(make_venv '2.11.0+xpu' no k)" "$XPU")" false
+check "pin + 2.15+xpu above current ceiling" "$(escape "$(make_venv '2.15.0+xpu' no k2)" "$XPU")" false
+check "pin + supported wheel, clean" "$(escape "$(make_venv '2.14.0+xpu' no l)" "$XPU")" true
 check "pin + supported wheel, generic triton" \
     "$(escape "$(make_venv '2.9.1+xpu' yes m)" "$XPU")" false
 # The FAMILY spelling is a bare leaf with no slashes at all.
@@ -163,8 +169,26 @@ for _odd in "https://mirror/simple/private-xpu" "https://mirror/whl/cu128-xpu" "
 done
 # Non-XPU families must not be touched by any of this.
 check "cuda pin + cuda wheel"  "$(escape "$(make_venv '2.9.1+cu128' yes t)" "https://download.pytorch.org/whl/cu128")" true
-check "rocm pin + rocm wheel"  "$(escape "$(make_venv '2.9.1+rocm6.4' yes u)" "https://download.pytorch.org/whl/rocm6.4")" true
+check "legacy rocm with generic compiler requires repair"  "$(escape "$(make_venv '2.9.1+rocm6.4' yes u)" "https://download.pytorch.org/whl/rocm6.4")" false
 check "cpu pin + cpu wheel"    "$(escape "$(make_venv '2.9.1+cpu' yes v)" "https://download.pytorch.org/whl/cpu")" true
+
+echo "ROCm owns triton-rocm, not the CUDA or XPU provider"
+check "ROCm correct provider stays current" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' rocm R1)" "")" true
+check "ROCm missing provider repairs" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' no R2)" "")" false
+check "ROCm generic provider repairs" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' yes R3)" "")" false
+check "ROCm correct plus generic provider repairs" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' rocm-generic R4)" "")" false
+check "ROCm XPU provider repairs" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' xpuonly R5)" "")" false
+check "ROCm explicit pin triggers compiler repair" \
+    "$(escape "$(make_venv '2.14.0+cpu' no R6)" "" "rocm7.2")" false
+check "XPU rejects ROCm provider" \
+    "$(escape "$(make_venv '2.14.0+xpu' rocm R7)" "$XPU")" false
+check "ROCm wrong compiler version repairs" \
+    "$(escape "$(make_venv '2.14.0+rocm7.2' oldrocm R8)" "")" false
 
 # --- parity with the helpers that would actually do the repair --------------------------------
 # The escape only pays off if the leaf it calls "known" is one install_python_stack acts on, so

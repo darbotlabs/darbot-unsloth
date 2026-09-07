@@ -507,7 +507,9 @@ class UnslothTrainer(SFTTrainer):
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(
+                self.args, self.model
+            )
             self.optimizer = _create_unsloth_optimizer(
                 self.model,
                 optimizer_cls,

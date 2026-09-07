@@ -18,6 +18,7 @@ Must import inside that half-installed venv: stdlib only, `packaging` optional.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -26,6 +27,14 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+_policy_spec = importlib.util.spec_from_file_location(
+    "_unsloth_python_policy", Path(__file__).with_name("python_policy.py")
+)
+_policy = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(_policy)
+interpreter_identity = _policy.interpreter_identity
+supported_interpreter = _policy.supported_interpreter
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
 MANIFEST_SCHEMA = 1
@@ -47,6 +56,7 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "extras.txt",
     "extras-no-deps.txt",
     "no-torch-runtime.txt",
+    "no-torch-constraints.txt",
     "single-env/data-designer-deps.txt",
     "single-env/data-designer.txt",
 )
@@ -284,6 +294,7 @@ def write_manifest(
         "package": package_name,
         "package_version": _installed_version(package_name),
         "python": platform.python_version(),
+        "interpreter": interpreter_identity(),
         "platform": f"{sys.platform}-{platform.machine()}",
         "prefix": str(venv_root()),
         "steps_total": steps_total,
@@ -358,7 +369,12 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     fall back to their own detection on None and never to False, so an install
     made before either existed is not silently switched out of no-torch mode.
     """
-    manifest = read_manifest(root)
+    return _recorded_no_torch_from_manifest(read_manifest(root), root)
+
+
+def _recorded_no_torch_from_manifest(
+    manifest: Optional[dict], root: Optional[Path] = None,
+) -> Optional[bool]:
     if manifest is not None:
         value = manifest.get("no_torch")
         if isinstance(value, bool):
@@ -425,8 +441,8 @@ def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
     Covers what studio.txt uses: names, specifiers, inline comments, markers.
     pip flags are skipped.
     """
-    text = line.split("#", 1)[0].strip()
-    if not text or text.startswith("-"):
+    text = re.split(r"\s+#", line, maxsplit = 1)[0].strip()
+    if not text or text.startswith(("#", "-")):
         return None
     try:
         from packaging.requirements import Requirement
@@ -755,6 +771,7 @@ def verify_install(
     installed_conflicts: Optional[Sequence[str]] = None,
     deep: bool = False,
     scan_paths: Optional[Sequence[str]] = None,
+    interpreter: Optional[dict] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
@@ -777,6 +794,7 @@ def verify_install(
     deps_ok = not missing
 
     manifest = read_manifest(root)
+    no_torch = _recorded_no_torch_from_manifest(manifest, root) is True
     manifest_ok = False
     reason: Optional[str] = None
     vanished = False
@@ -785,19 +803,31 @@ def verify_install(
         reason = "studio_install_incomplete"
     elif manifest.get("schema") != MANIFEST_SCHEMA:
         reason = "studio_install_manifest_schema"
+    elif not supported_interpreter(manifest.get("interpreter") or {}):
+        reason = "studio_install_python_unsupported"
+    elif interpreter is not None and not supported_interpreter(interpreter):
+        reason = "studio_install_python_unsupported"
+    elif (interpreter is not None or installed is None) and manifest.get("interpreter") != (
+        interpreter if interpreter is not None else interpreter_identity()
+    ):
+        reason = "studio_install_interpreter_changed"
     else:
         # `update --package X` records X, so comparing against unsloth would
         # report a permanent version change.
         manifest_package = manifest.get("package") or package_name
+        companions = (
+            ("unsloth-zoo",)
+            if _canonical(manifest_package) != "unsloth-zoo" and not no_torch
+            else ()
+        )
         if installed is None:
-            companions = () if _canonical(manifest_package) == "unsloth-zoo" else ("unsloth-zoo",)
             current, local_conflict = installed_version_probe(manifest_package, companions)
         else:
             current = _installed_version(manifest_package, installed)
             local_conflict = False
         foreign_conflicts = {_canonical(name) for name in (installed_conflicts or ())}
         core_conflict = _canonical(manifest_package) in foreign_conflicts or (
-            _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
+            any(name in foreign_conflicts for name in companions)
         )
         recorded = manifest.get("package_version")
         # Every check below compares against `current`, which an absent
@@ -824,7 +854,11 @@ def verify_install(
         scan_package = (manifest or {}).get("package") or package_name
         # unsloth-zoo only for the default install: `--package X` installs X
         # alone, so its neighbours are not ours to repair.
-        companions = ("unsloth-zoo",) if _canonical(scan_package) == "unsloth" else ()
+        companions = (
+            ("unsloth-zoo",)
+            if _canonical(scan_package) == "unsloth" and not no_torch
+            else ()
+        )
         # No dist-info leaves the scan nothing to walk, and no check above ever
         # looked at the companion's version.
         if not vanished:

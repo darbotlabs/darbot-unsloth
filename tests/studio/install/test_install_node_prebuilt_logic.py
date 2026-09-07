@@ -289,10 +289,10 @@ def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Pat
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
     # npm too old -> not a match
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "10.9.0")
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
 
 
@@ -306,7 +306,7 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
 
     def boom(*a, **k):
         raise AssertionError("must not download when the install already matches")
@@ -314,7 +314,7 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     monkeypatch.setattr(M, "download_file", boom)
     monkeypatch.setattr(M, "download_bytes", boom)
 
-    rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+    rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
 
 
@@ -323,11 +323,11 @@ def test_existing_install_usable_is_version_agnostic(tmp_path: Path, monkeypatch
     assert M.existing_install_usable(tmp_path, host) is False
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     assert M.existing_install_usable(tmp_path, host) is True
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "10.9.0")
     assert M.existing_install_usable(tmp_path, host) is False
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: None)
     assert M.existing_install_usable(tmp_path, host) is False
 
@@ -342,7 +342,7 @@ def test_install_prebuilt_keeps_existing_when_index_unreachable(tmp_path: Path, 
     M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.setattr(M, "fetch_json", _offline)
 
     def boom(*a, **k):
@@ -371,7 +371,7 @@ def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, m
     M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.setattr(M, "fetch_json", _offline)
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = True)
@@ -380,12 +380,14 @@ def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, m
 @pytest.mark.parametrize(
     "ver,ok",
     [
-        ("20.19.0", True),
+        ("20.19.0", False),
         ("20.18.9", False),
-        ("22.12.0", True),
+        ("22.12.0", False),
+        ("22.13.0", True),
         ("22.11.5", False),
-        ("23.0.0", True),
+        ("23.0.0", False),
         ("24.4.1", True),
+        ("26.8.1", True),
         ("21.7.3", False),
         ("24", True),
         ("20", False),
@@ -393,6 +395,37 @@ def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, m
 )
 def test_meets_node_floor(ver, ok):
     assert M._meets_node_floor(ver) is ok
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        (None, False),
+        ("garbage", False),
+        ("10.9.0", False),
+        ("11.0.0", False),
+        ("11.9.9", False),
+        ("11.10.0", True),
+        ("11.19.0", True),
+        ("12.0.2", True),
+    ],
+)
+def test_npm_floor_requires_the_release_age_policy(version, expected):
+    assert M._meets_npm_floor(version) is expected
+
+
+def test_prebuilt_floors_match_the_frontend_manifest():
+    manifest = json.loads((PACKAGE_ROOT / "studio" / "frontend" / "package.json").read_text(encoding = "utf-8"))
+    assert manifest["engines"]["node"] == "^22.13.0 || >=24.0.0"
+    assert manifest["engines"]["npm"] == f">={M.NPM_MIN_VERSION}"
+
+
+@pytest.mark.parametrize("node,npm", [("20.19.0", "11.19.0"), ("22.12.0", "11.19.0"), ("24.18.0", "11.9.9")])
+def test_offline_fallback_rejects_a_runtime_below_either_floor(tmp_path, monkeypatch, node, npm):
+    M.write_metadata(tmp_path, version = node, asset = "node", sha256 = "recorded")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: node)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: npm)
+    assert not M.existing_install_usable(tmp_path, _host("linux", "x64"))
 
 
 def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypatch):
@@ -408,6 +441,13 @@ def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypat
         M.install_prebuilt(install_dir, channel = "20.18.0", min_major = 24, force = False)
 
 
+def test_release_selector_cannot_bypass_frontend_floor(tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "fetch_json", lambda url: [{"version": "v22.12.0", "lts": "Jod"}])
+    with pytest.raises(PrebuiltFallback, match = "below the floor"):
+        M.install_prebuilt(tmp_path / "node", channel = "lts", min_major = 20, force = False)
+
+
 def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, monkeypatch):
     # Archive download fails but a usable older Node is on disk -> keep it.
     install_dir = tmp_path / "node"
@@ -416,7 +456,7 @@ def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, mon
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.setattr(M, "download_file_verified", _offline)
     rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
@@ -454,21 +494,21 @@ def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
 
 
 def test_ensure_npm_floor_scopes_upgrade_to_install_dir(tmp_path: Path, monkeypatch):
-    # A pinned build shipping npm < 11 self-upgrades, but only inside the isolated
+    # A pinned build shipping npm < 11.10 self-upgrades, but only inside the isolated
     # prefix: it goes through _run_node against install_dir, never the system.
     install_dir = tmp_path / "node"
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "10.9.0")
     calls = []
     monkeypatch.setattr(M, "_run_node", lambda d, h, args, **kw: calls.append((d, args)) or "")
     M._ensure_npm_floor(install_dir, _host("linux", "x64"))
     assert len(calls) == 1
     target_dir, args = calls[0]
     assert target_dir == install_dir  # upgrade scoped to the isolated dir
-    assert args[-3:] == ["install", "-g", f"npm@^{M.NPM_MIN_MAJOR}"]
+    assert args[-3:] == ["install", "-g", f"npm@^{M.NPM_MIN_VERSION}"]
 
 
 def test_ensure_npm_floor_noop_when_npm_meets_bar(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: M.NPM_MIN_MAJOR)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: M.NPM_MIN_VERSION)
 
     def boom(*a, **k):
         raise AssertionError("must not run an npm upgrade when npm already meets the floor")
@@ -585,7 +625,7 @@ def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
 
     def boom(*a, **k):
         raise AssertionError("default channel must not hit nodejs.org when the install matches")
@@ -624,7 +664,7 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
 
     def boom(*a, **k):
@@ -644,7 +684,7 @@ def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
     rc = M.main(["--install-dir", str(install_dir), "--node-version", "latest"])
     assert rc == M.EXIT_FALLBACK
@@ -719,7 +759,7 @@ def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypa
     host = _host("linux", "x64")
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "aa")
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "aa") is True
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "bb") is False
@@ -733,7 +773,7 @@ def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monk
     M.write_metadata(install_dir, version = "26.3.1", asset = "a", sha256 = "s")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "26.3.1")
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
 
     def boom(*a, **k):
@@ -756,7 +796,7 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     M.write_metadata(install_dir, version = version, asset = asset, sha256 = "0" * 64)  # not the pin
     monkeypatch.setattr(M, "detect_host", lambda: host)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
-    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_npm_version", lambda d, h: "11.19.0")
     monkeypatch.setattr(M, "download_file_verified", _offline)  # transient download failure
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)

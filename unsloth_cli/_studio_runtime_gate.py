@@ -286,7 +286,9 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     import json
     import subprocess
 
-    venv = studio_home / "unsloth_studio"
+    from unsloth_cli._environment import environment_dir
+
+    venv = environment_dir(studio_home)
     protected_root = _canonical_windows_path(venv)
     # Not gated on exists(): a shim renamed out of the way mid-update still runs.
     protected_files = {

@@ -15,25 +15,14 @@
 # Linux is the exception: containers are genuinely clean.
 #
 # ── What `overlay` decides ────────────────────────────────────────────────────
-# install.sh / install.ps1 come from this ref but install unsloth FROM PyPI, the
-# consumer path, which has to stay that way -- so everything Python-side would be the
-# RELEASED wheel's (setup.sh, setup.ps1, install_python_stack.py and every
-# requirements/constraints file they reach via Path(__file__)) and a branch changing
-# any of them would get a green run proving nothing. `overlay: true` legs therefore
-# re-point the venv at this ref before studio setup, via UNSLOTH_CI_SOURCE_OVERLAY: a
-# `--no-deps` editable install of the checkout, so `import studio` resolves to the
-# working tree and the setup-script lookup finds this ref's setup.sh / setup.ps1. NOT
-# `install.sh --local`, which also pulls `unsloth-zoo @ git+https://...` and so needs
-# the git these legs remove; an editable overlay resolves and clones nothing.
-#
-# Legs left on `overlay: false`:
-#   mac */mask/pipe     the `curl | sh` shape a user runs, kept end-to-end on the
-#                       released package so a broken PyPI release still shows up.
-#   mac macos-15/trace  `notools` rejects toolchain use except uv's exact optional
-#                       libpython self-ID patch; `dylibpatch` requires that control call.
-#                       No overlay: setuptools-scm's editable build would call git itself.
-#   linux ubuntu2404-nonroot-notransport  dies at the elevation gate before a venv exists.
-#   wsl                 only install.sh is copied in; no source tree inside WSL.
+# This fork has no published migrated wheel. Automatic runs supply this ref's
+# complete checkout through UNSLOTH_CI_SOURCE_OVERLAY before dependency resolution,
+# so the vendored Zoo companion precedes local Core. This explicit CI source hook
+# also covers piped delivery and Git-masked hosts without an upstream Zoo clone.
+# `overlay: true` additionally requires the runtime overlay marker. The no-transport
+# leg receives source before transport removal but must fail at the elevation gate.
+# Only an explicit `installer_source: published` dispatch tests upstream releases;
+# it is a reference comparison, not evidence that the fork stack is supported.
 
 name: Clean machine install
 
@@ -45,6 +34,11 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
+      - 'studio/install_manifest.py'
+      - 'studio/python_policy.py'
+      - 'studio/install_zoo.py'
+      - 'studio/backend/vendor/unsloth_zoo_compat/pyproject.toml'
+      - 'unsloth_cli/_environment.py'
       # setup.sh (727) and setup.ps1 (2343, 3630, 3916) call these directly and the
       # overlay makes them THIS ref's code, so they decide whether a clean machine gets
       # a native prebuilt or a toolchain-dependent fallback.
@@ -78,6 +72,11 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
+      - 'studio/install_manifest.py'
+      - 'studio/python_policy.py'
+      - 'studio/install_zoo.py'
+      - 'studio/backend/vendor/unsloth_zoo_compat/pyproject.toml'
+      - 'unsloth_cli/_environment.py'
       - 'studio/install_*_prebuilt.py'
       - 'studio/prebuilt_core.py'
       - 'studio/node_prebuilt_pins.json'
@@ -93,7 +92,7 @@ on:
   workflow_dispatch:
     inputs:
       installer_source:
-        description: 'published = curl unsloth.ai/install.sh, tree = the checked-out script'
+        description: 'published = fork main installer, tree = the checked-out script (required for unpublished changes)'
         type: choice
         options: [tree, published]
         default: tree
@@ -234,7 +233,7 @@ jobs:
           # Empty (and so ignored) on the non-overlay legs, and on
           # `installer_source: published` too: the script under test is then production's,
           # which has no such hook, so overlaying this ref reports on neither honestly.
-          UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
+          UNSLOTH_CI_SOURCE_OVERLAY: ${{ inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           set -a; . ./clean-machine.env; set +a
           set -o pipefail
@@ -255,7 +254,7 @@ jobs:
           # pull_request/push, so automatic runs stay on this ref.
           SCRIPT=install.sh
           if [ "${{ inputs.installer_source }}" = "published" ]; then
-            curl -fsSL https://unsloth.ai/install.sh -o published-install.sh
+            curl -fsSL https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh -o published-install.sh
             SCRIPT=published-install.sh
             echo "installer: published (unsloth.ai)"
           else
@@ -273,7 +272,7 @@ jobs:
               # current. The published case re-fetches rather than piping $SCRIPT, because
               # the live transport is half of what this delivery tests.
               if [ "${{ inputs.installer_source }}" = "published" ]; then
-                curl -fsSL https://unsloth.ai/install.sh | env $CLEAN_ENV sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
+                curl -fsSL https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh | env $CLEAN_ENV sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
               else
                 # `sh -s --` with no further args passes an empty positional, so add
                 # the separator only when there are flags.
@@ -302,13 +301,12 @@ jobs:
           fi
           exit "$rc"
 
-      # install.sh ignores an unset UNSLOTH_CI_SOURCE_OVERLAY, so a typo in the matrix or
-      # the expression silently puts every leg back on the released wheel.
+      # A successful install must also confirm that this ref supplied the source.
       - name: Assert this ref's Python was really put under test
         if: matrix.overlay && inputs.installer_source != 'published' && steps.install.outcome == 'success'
         run: |
           grep -q "CI: overlaying source checkout" logs/install.log || {
-            echo "::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package"
+            echo "::error::this leg requires confirmation that the CI source checkout was selected"
             exit 1
           }
           echo "overlay applied; this leg exercised this ref's Python"
@@ -323,6 +321,7 @@ jobs:
           [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent nodylibtool"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools dylibpatch"
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
+            UNSLOTH_ALLOW_TOOLS='${{ inputs.installer_source != 'published' && 'git' || '' }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
 
           if [ "${{ matrix.mode }}" = "trace" ]; then
@@ -495,7 +494,8 @@ jobs:
           # No elevation AND no transport. apt is the only way to get curl and reaching
           # apt needs elevation, so failing is correct; the point is to pin the exact
           # message and prove it is actionable rather than a bare `curl: (56)`. No
-          # overlay: it never reaches a venv to overlay into.
+          # runtime overlay assertion: it never reaches a venv. The checkout is
+          # still supplied before hiding transports, as required by this fork.
           - label: ubuntu2404-nonroot-notransport
             image: ubuntu:24.04
             runner: ubuntu-latest
@@ -560,7 +560,7 @@ jobs:
           dl "$raw/.github/scripts/clean-machine-assert.sh" .github/scripts/clean-machine-assert.sh
           # Empty on pull_request/push, so only an explicit dispatch tests unsloth.ai.
           if [ "${{ inputs.installer_source }}" = "published" ]; then
-            dl https://unsloth.ai/install.sh install.sh
+            dl https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh install.sh
             echo "installer: published (unsloth.ai)"
           else
             dl "$raw/install.sh" install.sh
@@ -572,7 +572,7 @@ jobs:
       # serves the same commit as a tarball over plain HTTPS, so this ref's Python gets in
       # without a git client.
       - name: Fetch this ref's source tree for the overlay
-        if: matrix.overlay && inputs.installer_source != 'published'
+        if: inputs.installer_source != 'published'
         run: |
           set -e
           mkdir -p ci-source
@@ -806,7 +806,7 @@ jobs:
         if: matrix.overlay && inputs.installer_source != 'published' && (steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success')
         run: |
           grep -q "CI: overlaying source checkout" logs/install.log || {
-            echo "::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package"
+            echo "::error::this leg requires confirmation that the CI source checkout was selected"
             exit 1
           }
           echo "overlay applied; this leg exercised this ref's Python"
@@ -978,20 +978,23 @@ jobs:
           # pull_request/push, so automatic runs stay on this ref.
           if ('${{ inputs.installer_source }}' -eq 'published') {
             Write-Host 'installer: published (unsloth.ai)'
-            wsl -d unsloth-ci -u root -- sh -c 'curl -fsSL https://unsloth.ai/install.sh -o /root/install.sh'
+            wsl -d unsloth-ci -u root -- sh -c 'curl -fsSL https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh -o /root/install.sh'
             if ($LASTEXITCODE -ne 0) {
               Write-Host '::error::could not fetch the published installer inside WSL'
               exit 1
             }
           } else {
-            # Copy the script in rather than read across /mnt/c: a DrvFs path brings Windows
-            # permissions and CRLF risk, neither of which a real WSL user has.
+            # Copy the checkout onto ext4: the vendored Zoo companion must be
+            # available before resolving local Core, including piped delivery.
             $wslPath = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')/install.sh").Trim()
             Write-Host "installer source in WSL: $wslPath"
             wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
+            $wslRoot = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')").Trim()
+            wsl -d unsloth-ci -u root -- cp -a "$wslRoot" /root/ci-source
+            if ($LASTEXITCODE -ne 0) { throw 'Could not copy the fork source into WSL' }
           }
           # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
-          wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
+          wsl -d unsloth-ci -u root -- sh -c 'cd /root && { [ ! -d ci-source ] || export UNSLOTH_CI_SOURCE_OVERLAY=/root/ci-source; } && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
           $installRc = $LASTEXITCODE
           Write-Host "installer exit: $installRc"
 
@@ -1203,7 +1206,7 @@ jobs:
             # never evidence. Only a probe that STARTS counts.
             Write-Host "py -0p (stale registry entries; masked paths no longer exist on disk):"
             & py -0p 2>&1 | ForEach-Object { Write-Host "  $_" }
-            foreach ($v in '-3.11', '-3.12', '-3.13') {
+            foreach ($v in '-3.11', '-3.12', '-3.13', '-3.14') {
               $out = & py $v -c "import sys; print(sys.executable)" 2>&1
               $rc = $LASTEXITCODE
               # Print every probe: when this next fails it must say why.
@@ -1253,7 +1256,7 @@ jobs:
           # unsloth.ai report on this ref. Empty on pull_request/push.
           $script = './install.ps1'
           if ('${{ inputs.installer_source }}' -eq 'published') {
-            Invoke-WebRequest -Uri https://unsloth.ai/install.ps1 `
+            Invoke-WebRequest -Uri https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 `
               -OutFile published-install.ps1 -UseBasicParsing -TimeoutSec 300
             $script = './published-install.ps1'
             Write-Host 'installer: published (unsloth.ai)'
@@ -1354,11 +1357,20 @@ jobs:
         if: matrix.overlay && inputs.installer_source != 'published' && steps.install.outcome == 'success'
         shell: pwsh
         run: |
-          if (-not (Select-String -Path logs/install.log -Pattern 'CI: overlaying source checkout' -SimpleMatch -Quiet)) {
-            Write-Host '::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package'
-            exit 1
-          }
-          Write-Host "overlay applied; this leg exercised this ref's Python"
+          $py = Join-Path (Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio') 'Scripts\python.exe'
+          $probe = @'
+          from pathlib import Path
+          import sys
+          import studio
+          expected = (Path(sys.argv[1]) / "studio").resolve()
+          actual = Path(studio.__file__).resolve().parent
+          assert actual == expected, f"CI expected {expected}, but imported {actual}"
+          print(f"CI source verified: {actual}")
+          '@
+          # Isolation excludes the current checkout from sys.path; only the
+          # installed editable mapping may make this import resolve to the ref.
+          & $py -I -c $probe $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Assert the install added no compiler toolchain
         if: always() && steps.install.outcome != 'skipped'

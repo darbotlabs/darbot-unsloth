@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Build the unsloth-blackwell image on any Linux host with Docker. The build host's
+# Build the local fork image on a Linux host with Docker. The build host's
 # GPU is NOT used: nvcc cross-compiles.
 #
 # Usage:
-#   ./build.sh                 # builds unsloth-blackwell:latest pinned to unsloth main
-#   TAG=2026.05.1 ./build.sh   # custom tag
-#   UNSLOTH_REF=v2026.5.6 UNSLOTH_ZOO_REF=v2026.5.4 ./build.sh   # pin git refs
+#   ./build.sh                        # builds darbot-unsloth:core from fork main
+#   TAG=my-core ./build.sh             # custom local tag
+#   UNSLOTH_REF=<fork-commit> ./build.sh
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
-TAG="${TAG:-latest}"
-CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
+IMAGE_NAME="${IMAGE_NAME:-darbot-unsloth}"
+TAG="${TAG:-core}"
+CUDA_VERSION="${CUDA_VERSION:-13.0.0}"
 UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.14.7}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
-UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
+if [ -n "${UNSLOTH_ZOO_REF:-}" ]; then
+    echo "ERROR: Zoo is vendored with Core; select UNSLOTH_REF, not UNSLOTH_ZOO_REF." >&2
+    exit 1
+fi
 
 # Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
 # the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
@@ -40,8 +43,7 @@ resolve_git_ref() {
     [ -n "$sha" ] || sha="$ref"     # not a branch/tag: a short sha or already-gone ref
     printf '%s' "$sha"
 }
-UNSLOTH_REF="$(resolve_git_ref https://github.com/unslothai/unsloth "$UNSLOTH_REF")"
-UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UNSLOTH_ZOO_REF")"
+UNSLOTH_REF="$(resolve_git_ref https://github.com/darbotlabs/darbot-unsloth "$UNSLOTH_REF")"
 # The baked notebooks are one more RUN layer keyed on a mutable ref, and the publish
 # workflow already freezes this one; leaving it out here meant a rebuild after
 # unslothai/notebooks moved silently kept the old set, and stamped the old commit
@@ -68,7 +70,7 @@ fi
 echo "Building ${IMAGE_NAME}:${TAG}"
 echo "  CUDA           ${CUDA_VERSION}  Ubuntu ${UBUNTU_VERSION}  Python ${PYTHON_VERSION}"
 echo "  unsloth        @${UNSLOTH_REF}"
-echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
+echo "  unsloth-zoo    vendored companion from Core @${UNSLOTH_REF}"
 echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
 echo "  notebooks      @${UNSLOTH_NOTEBOOKS_REF}"
 # Read the arch list out of the Dockerfile rather than repeating it: the hand-copied
@@ -84,7 +86,6 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg UBUNTU_VERSION="${UBUNTU_VERSION}" \
     --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
     --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
-    --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
     --build-arg LLAMA_PREBUILT_TAG="${LLAMA_PREBUILT_TAG}" \
     --build-arg UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF}" \
     -t "${IMAGE_NAME}:${TAG}" \

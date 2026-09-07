@@ -65,23 +65,8 @@ permissions:
   contents: read
 
 env:
-  # The oldest interpreter this code is expected to run on.
-  #
-  # Nothing executes it any more. The 3.10, 3.11 and 3.12 legs ran the same suite as 3.13
-  # and differed by exactly one skip marker, at 97 runner-minutes per push against a queue
-  # that has been observed 195 deep, so they are gone and the wall-clock they were costing
-  # every other workflow is gone with them.
-  #
-  # What they were really defending is that nothing reaches for a symbol newer than this,
-  # which is static, and scripts/lint_backend_python_floor.py now checks it here on every
-  # pull request in seconds across 1093 files. Raise this number only with a reason, and
-  # remember that raising it is a support decision, not a CI one.
-  #
-  # 3.10 rather than the 3.9 pyproject.toml declares, because 3.9 is not true today:
-  # unsloth/models/_utils.py uses dataclasses.dataclass(kw_only) and
-  # tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10. Reconciling those two
-  # is worth doing separately; this lint is what made it visible.
-  PYTHON_FLOOR: '3.10'
+  # This fork supports only standard CPython >=3.14.7,<3.15.
+  PYTHON_FLOOR: '3.14.7'
 
 
 jobs:
@@ -112,42 +97,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 only, on pull requests and on main alike.
-        #
-        # Measured on one runner over the same tree: the four legs collected the same
-        # 26,320 tests and differed by exactly ONE of them, the >= 3.12 gate on
-        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 reported
-        # 26193 passed / 127 skipped, 3.12 and 3.13 reported 26194 / 126. Four legs cost
-        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a queue
-        # that has been observed 195 deep, to re-run one identical suite four times and
-        # learn the value of a single skip marker.
-        #
-        # What the older legs were really defending is that nothing in the tree reaches
-        # for a symbol newer than the floor, and that is a static property. It is now
-        # checked statically, on every pull request, in seconds, by
-        # scripts/lint_backend_python_floor.py, which reads stdlib API availability
-        # rather than syntax alone and covers 1093 shipped and executed files.
-        #
-        # A static check does not run anything, though, and that part cannot be waved
-        # away: two interpreters that both accept a line can still behave differently on
-        # it, and a sys.version_info branch is only ever parsed, never taken.
-        #
-        # So the branches were counted rather than assumed. Seven files in the backend
-        # carry one, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by
-        # the old matrix, whose oldest leg was 3.10, so every leg took the same side of
-        # them and removing legs loses nothing there. 3.14 is above every leg there has
-        # ever been. What is genuinely lost is the PRE-3.12 side of three files, and that
-        # is small enough to keep executing directly.
-        #
-        # Hence the second entry: 3.11, the newest version that still takes that side,
-        # running those three files and nothing else. Roughly 40 tests in under ten
-        # seconds, not a second copy of the suite, and it runs beside the full leg rather
-        # than in front of it, so the critical path is unchanged.
+        # One complete supported-runtime leg; do not spend runner minutes on
+        # unsupported older interpreters or free-threaded builds.
         include:
-          - python: '3.13'
+          - python: '3.14.7'
             scope: full
-          - python: '3.11'
-            scope: floor-spot-check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -189,8 +143,8 @@ jobs:
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+            'torch==2.14.0' 'torchaudio==2.11.0'
+          pip install 'transformers==5.16.1'
           # peft: core/inference/inference.py imports it at module scope, and it is listed
           # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
           # installs. Without it every importorskip of that module SKIPS instead of running,
@@ -316,26 +270,6 @@ jobs:
             tests/test_profile_stats.py \
             tests/test_media_auto_switch.py
 
-      - name: Pre-3.12 branches, on the newest interpreter that takes them
-        if: matrix.scope == 'floor-spot-check'
-        working-directory: studio/backend
-        # Not a second copy of the suite. Seven backend files carry a sys.version_info
-        # branch, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the
-        # old four-leg matrix, whose oldest leg WAS 3.10, so every leg took the same side
-        # and dropping legs loses nothing there. 3.14 is above every leg there has ever
-        # been. What a 3.13-only matrix genuinely stops executing is the pre-3.12 side of
-        # these files, and that is small enough to keep running rather than argue about.
-        #
-        # 3.11 because it is the newest version that still takes that side: closest to
-        # the ceiling, so anything it catches is about the boundary rather than about
-        # being old. Roughly 40 tests in under ten seconds, beside the full leg rather
-        # than in front of it, so the critical path is the full leg either way.
-        run: |
-          python -m pytest -q --tb=short --timeout=330 \
-            tests/test_third_party_source.py \
-            tests/test_recommended_folders_permission.py \
-            tests/test_hf_cache_settings.py
-
       - name: Save the pip cache
         if: always()
         uses: ./.github/actions/pip-cache-save
@@ -363,7 +297,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -381,7 +315,7 @@ jobs:
       #     install path; they self-skip when uv is missing.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26.8.1'
 
       - name: Install uv (for tests/python/* sandboxed venvs)
         run: pip install uv
@@ -396,8 +330,8 @@ jobs:
             'numpy<3' pytest pytest-asyncio pytest-xdist httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+            'torch==2.14.0' 'torchvision==0.29.0' 'torchaudio==2.11.0'
+          pip install 'transformers==5.16.1'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
           pip install 'bitsandbytes>=0.45'
@@ -408,13 +342,7 @@ jobs:
           # No --no-deps: matches prior `pip install 'unsloth_zoo>=2026.5.1'`
           # behaviour so triton etc. still come in for the Repo tests CPU
           # collection imports.
-          for attempt in 1 2 3; do
-            if pip install "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
-              break
-            fi
-            [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
-            sleep $((5 * attempt))
-          done
+          python studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
           pip install -e . --no-deps
 
       - name: Repo tests (CPU, auto-discovered)

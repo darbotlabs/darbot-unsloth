@@ -106,6 +106,26 @@ def _build_report_targets(training_args) -> list[str] | str:
     return report_to or "none"
 
 
+def _hf_warmup_ratio(ratio: float) -> float:
+    # HF 5 treats 1.0 as one STEP, unlike Studio's inclusive ratio field.
+    # Its ceil(total_steps * ratio) produces full-run warmup for all supported
+    # step counts with the largest representable fraction below one.
+    return math.nextafter(1.0, 0.0) if ratio == 1.0 else ratio
+
+
+def _configure_tensorboard_callback(trainer, training_args) -> None:
+    if not training_args.get("enable_tensorboard", False):
+        return
+    from transformers.integrations import TensorBoardCallback
+
+    logging_dir = str(resolve_tensorboard_dir(training_args.get("tensorboard_dir")))
+    # Transformers 5 moved logging_dir from TrainingArguments to the callback.
+    # Set it per trainer, rather than a process-wide environment variable.
+    for callback in trainer.callback_handler.callbacks:
+        if isinstance(callback, TensorBoardCallback):
+            callback.logging_dir = logging_dir
+
+
 def _verbose_logging_requested() -> bool:
     """Whether `unsloth studio --verbose` is in effect.
 
@@ -670,11 +690,8 @@ class UnslothTrainer:
             # The subprocess stdout is teed into the server log, so HF's bar is noise there; --verbose restores it.
             "disable_tqdm": _hf_stdout_progress_disabled(),
         }
-
-        if training_args.get("enable_tensorboard", False):
-            config["logging_dir"] = str(
-                resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
-            )
+        if training_args.get("warmup_ratio") is not None:
+            config["warmup_steps"] = _hf_warmup_ratio(training_args["warmup_ratio"])
 
         if max_steps_val and max_steps_val > 0:
             config["max_steps"] = max_steps_val
@@ -3467,10 +3484,10 @@ class UnslothTrainer:
 
         try:
             text_field = config_args.get("dataset_text_field", "text") or "text"
-            max_length = int(config_args.get("max_seq_length") or 2048)
-            # The generated __init__ clamps max_seq_length to the model's cap and derives max_length from it,
-            # but runs after this: apply the same cap here or the transform truncates wider than the eager map
-            # it replaces.
+            max_length = int(
+                config_args.get("max_length") or config_args.get("max_seq_length") or 2048
+            )
+            # Clamp before installing the lazy transform, matching the eager path.
             model_cap = getattr(self.model, "max_seq_length", None)
             try:
                 if model_cap is not None and 0 < int(model_cap) < max_length:
@@ -3682,6 +3699,7 @@ class UnslothTrainer:
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that
                 # has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
+                _configure_tensorboard_callback(self.trainer, training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3720,6 +3738,7 @@ class UnslothTrainer:
                 )
                 self.trainer.add_callback(self._create_progress_callback())
                 _drop_hf_stdout_callbacks(self.trainer)
+                _configure_tensorboard_callback(self.trainer, training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3764,6 +3783,7 @@ class UnslothTrainer:
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
                 _drop_hf_stdout_callbacks(self.trainer)
+                _configure_tensorboard_callback(self.trainer, training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3931,12 +3951,8 @@ class UnslothTrainer:
                     1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
                     serial_as_none = False,
                 ),
-                "max_seq_length": training_args.get("max_seq_length", 2048),
+                "max_length": training_args.get("max_seq_length", 2048),
             }
-            if training_args.get("enable_tensorboard", False):
-                config_args["logging_dir"] = str(
-                    resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
-                )
             logger.info(
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
@@ -3948,7 +3964,7 @@ class UnslothTrainer:
                     config_args["dataloader_num_workers"] = 0
 
             if warmup_ratio_val is not None:
-                config_args["warmup_ratio"] = warmup_ratio_val
+                config_args["warmup_steps"] = _hf_warmup_ratio(warmup_ratio_val)
                 logger.info(f"Using warmup_ratio: {warmup_ratio_val}\n")
             elif warmup_steps_val is not None:
                 config_args["warmup_steps"] = warmup_steps_val
@@ -4148,7 +4164,7 @@ class UnslothTrainer:
                         logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
-                        "tokenizer": sft_tokenizer,
+                        "processing_class": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
                         "args": cpt_args,
@@ -4159,7 +4175,7 @@ class UnslothTrainer:
                 else:
                     trainer_kwargs = {
                         "model": self.model,
-                        "tokenizer": sft_tokenizer,
+                        "processing_class": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
                         "args": SFTConfig(**config_args),
@@ -4279,6 +4295,7 @@ class UnslothTrainer:
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
             # no terminal. --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)
+            _configure_tensorboard_callback(self.trainer, training_args)
 
             train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
             is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)

@@ -73,11 +73,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@dagrejs/dagre": path.resolve(
-        __dirname,
-        "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
-      ),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   build: {

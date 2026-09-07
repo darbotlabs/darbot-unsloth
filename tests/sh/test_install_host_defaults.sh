@@ -417,6 +417,7 @@ _shell_if_block() {
 # start of an ERE interval.
 _ps_brace_block() {
     awk -v pat="$2" '
+    { sub(/\r$/, "") }
     !found && $0 ~ pat { found = 1 }
     found { print; depth += gsub(/[{]/, "&") - gsub(/[}]/, "&"); if (depth <= 0) exit }
     ' "$1"

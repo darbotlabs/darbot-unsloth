@@ -101,12 +101,14 @@ def test_pdf_markdown_receives_page_limit(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
-    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+    assert captured == {
+        "page_chunks": True, "show_progress": False, "use_ocr": False, "pages": [0, 1]
+    }
 
 
-def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
-    # The pinned PyMuPDF4LLM legacy path ignores unknown kwargs; do not pass the
-    # newer layout-only OCR knobs or Markdown extraction silently loses policy control.
+def test_pdf_markdown_disables_latest_layout_implicit_ocr(monkeypatch):
+    # The latest layout engine enables OCR by default; the macOS legacy path
+    # has no implicit OCR and safely ignores this layout-only option.
     from core.rag import parsers
 
     captured = {}
@@ -122,7 +124,7 @@ def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
-    assert captured == {"page_chunks": True, "show_progress": False}
+    assert captured == {"page_chunks": True, "show_progress": False, "use_ocr": False}
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):

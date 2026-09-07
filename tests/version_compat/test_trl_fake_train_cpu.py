@@ -247,6 +247,17 @@ def _require_stack(_cpu_only_torch):
     except Exception:
         pass
 
+    # CPU-only import intentionally skips trainer rebinding. These integration
+    # tests must exercise the transforms even when CI sets UNSLOTH_ALLOW_CPU=1.
+    import trl
+    from unsloth.models.rl import _patch_trl_rl_trainers_impl
+    from unsloth.trainer import _patch_trl_trainer
+
+    for name in ("SFT", "GRPO", "DPO"):
+        if getattr(trl, f"{name}Trainer").__name__ != f"Unsloth{name}Trainer":
+            _patch_trl_rl_trainers_impl(f"{name.lower()}_trainer")
+    _patch_trl_trainer()
+
 
 def test_sft_trains_on_cpu(tmp_path):
     from datasets import Dataset

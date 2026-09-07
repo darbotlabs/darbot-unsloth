@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+python -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "Builds require standard CPython >=3.14.7,<3.15 (not free-threaded)"'
+
 # PyPI/Unsloth release publishing must use `./build.sh publish` (or an
 # equivalent stamp -> build -> verify-dist -> upload flow) so packaged Unsloth
 # artifacts include the display-only Unsloth release version.

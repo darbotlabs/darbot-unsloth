@@ -33,7 +33,7 @@ jobs:
     name: Validate published desktop release
     # A mistakenly flagged prerelease still reaches the job, so validation fails
     # visibly instead of silently skipping.
-    if: ${{ startsWith(inputs.release_tag, 'v') }}
+    if: ${{ vars.UNSLOTH_DESKTOP_PUBLISH == 'true' && startsWith(inputs.release_tag, 'v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

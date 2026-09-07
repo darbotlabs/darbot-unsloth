@@ -9,8 +9,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
 # ── Parse flags ──
-# --local: install from the local repo checkout (overlays unsloth as editable
-# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# --local: install from the local repo checkout and its vendored Zoo companion.
+# Mirrors install.sh --local for the Colab
 # path that runs setup.sh directly without going through install.sh.
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
@@ -827,7 +827,8 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
 fi
 if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
-    substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
+    export UNSLOTH_CORE_TRACKING_REF=pinned
+    substep "local mode: using $REPO_ROOT (editable; source tracking pinned)"
 fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
@@ -941,9 +942,21 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
-VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
-VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
-VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
+if [ -z "$STAGE_ROOT" ] && [ -n "${UNSLOTH_ENV_DIR:-}" ]; then
+    case "$UNSLOTH_ENV_DIR" in
+        /*) VENV_DIR="$UNSLOTH_ENV_DIR"
+            while [ "${VENV_DIR%/}" != "$VENV_DIR" ]; do VENV_DIR="${VENV_DIR%/}"; done ;;
+        *) setup_fail 1 "UNSLOTH_ENV_DIR must be an absolute environment path" ;;
+    esac
+    [ -n "$VENV_DIR" ] && [ "$VENV_DIR" != "$HOME" ] && [ "$VENV_DIR" != "$STUDIO_HOME" ] \
+        || setup_fail 1 "UNSLOTH_ENV_DIR must identify a dedicated virtual environment"
+    if [ -L "$VENV_DIR" ] \
+       || { [ -e "$VENV_DIR" ] && [ ! -d "$VENV_DIR" ]; } \
+       || { [ -d "$VENV_DIR" ] && [ -n "$(ls -A "$VENV_DIR" 2>/dev/null)" ] \
+            && { [ ! -f "$VENV_DIR/pyvenv.cfg" ] || [ ! -f "$VENV_DIR/.unsloth-studio-owned" ]; }; }; then
+        setup_fail 1 "UNSLOTH_ENV_DIR must be a Studio-owned virtual environment or empty directory"
+    fi
+fi
 
 # The override is validated, so a typo can no longer cost the cache. Venv-gated because
 # a writable-but-empty override still aborts at the venv check below, and clearing first
@@ -1125,7 +1138,7 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
 else
 
 # ── Node (isolated; never touches the system Node/npm) ──
-# Unsloth's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Match frontend engines: Node ^22.13.0 || >=24.0.0 and npm >=11.10.0.
 # Three sources:
 #   system  -- system Node + npm already satisfy both; used read-only.
 #   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
@@ -1147,11 +1160,16 @@ decide_node_source() {
         esac
         case "$_dns_nmin" in ''|*[!0-9]*) _dns_nmin=0 ;; esac
         _dns_pmaj="${_dns_npm%%.*}"
+        case "$_dns_npm" in
+            *.*) _dns_prest="${_dns_npm#*.}"; _dns_pmin="${_dns_prest%%.*}" ;;
+            *)   _dns_pmin=0 ;;
+        esac
+        case "$_dns_pmin" in ''|*[!0-9]*) _dns_pmin=0 ;; esac
         _dns_ok=false
-        if [ "$_dns_nmaj" -eq 20 ] && [ "$_dns_nmin" -ge 19 ]; then _dns_ok=true; fi
-        if [ "$_dns_nmaj" -eq 22 ] && [ "$_dns_nmin" -ge 12 ]; then _dns_ok=true; fi
-        if [ "$_dns_nmaj" -ge 23 ]; then _dns_ok=true; fi
-        if [ "$_dns_ok" = true ] && [ "$_dns_pmaj" -ge 11 ]; then
+        if [ "$_dns_nmaj" -eq 22 ] && [ "$_dns_nmin" -ge 13 ]; then _dns_ok=true; fi
+        if [ "$_dns_nmaj" -ge 24 ]; then _dns_ok=true; fi
+        if [ "$_dns_ok" = true ] \
+           && { [ "$_dns_pmaj" -gt 11 ] || { [ "$_dns_pmaj" -eq 11 ] && [ "$_dns_pmin" -ge 10 ]; }; }; then
             echo system
             return 0
         fi
@@ -1215,7 +1233,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
-        substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
+        substep "install Node ^22.13 or >=24 (with npm >=11.10) yourself and re-run, or check your network"
         setup_fail 1 "Could not install an isolated Node runtime"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
@@ -1234,7 +1252,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
 else
     _FRONTEND_SKIP=true
     step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
-    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node ^22.13 or >=24 and npm >=11.10"
     substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
@@ -1405,24 +1423,19 @@ _remove_agent_instruction_files \
 
 # ── Python venv + deps ──
 
-[ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
-[ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
-[ -d "$REPO_ROOT/.venv_t5" ] && rm -rf "$REPO_ROOT/.venv_t5"
-[ -d "$REPO_ROOT/.venv_t5_530" ] && rm -rf "$REPO_ROOT/.venv_t5_530"
-[ -d "$REPO_ROOT/.venv_t5_550" ] && rm -rf "$REPO_ROOT/.venv_t5_550"
-# Note: do NOT delete $STUDIO_HOME/.venv here — install.sh handles migration
+# Legacy repository environments may hold user data or be the explicit target.
+# Only the transactional root installer may replace an owned environment.
 
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
         # On Colab there is no Unsloth venv -- install backend deps into system Python.
-        # Strip all version constraints so pip keeps Colab's pre-installed
-        # packages (huggingface-hub, datasets, transformers) and only pulls
-        # in genuinely missing ones (structlog, fastapi, etc.).
+        # Hosted notebook defaults are not a supported interpreter fallback.
+        python -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "This fork requires standard CPython >=3.14.7,<3.15"' \
+            || setup_fail 1 "Colab's Python is outside this fork's supported policy; create a local CPython 3.14.7 environment"
         substep "Colab detected, installing Unsloth backend dependencies..."
         _COLAB_REQS_TMP="$(mktemp)"
-        sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
-            | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
+        cp "$SCRIPT_DIR/backend/requirements/studio.txt" "$_COLAB_REQS_TMP"
         if [ -s "$_COLAB_REQS_TMP" ]; then
             if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
                 rm -f "$_COLAB_REQS_TMP"
@@ -1437,10 +1450,10 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     else
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
         substep "Run install.sh first to create the environment:"
-        substep "curl -fsSL https://unsloth.ai/install.sh | sh"
+        substep "From a darbotlabs/darbot-unsloth checkout: bash install.sh --local"
         setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
-elif [ -n "$STAGE_ROOT" ]; then
+elif [ -n "$STAGE_ROOT" ] || [ -n "${UNSLOTH_ENV_DIR:-}" ]; then
     VIRTUAL_ENV="$VENV_DIR"
     PATH="$VENV_DIR/bin:$PATH"
     export VIRTUAL_ENV PATH
@@ -1449,6 +1462,9 @@ elif [ -n "$STAGE_ROOT" ]; then
 else
     source "$VENV_DIR/bin/activate"
 fi
+
+python -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "This fork requires standard CPython >=3.14.7,<3.15 (not free-threaded)"' \
+    || setup_fail 1 "Unsupported Python; recreate the environment with install.sh --local"
 
 install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
@@ -1495,7 +1511,7 @@ _setup_http_get_timed() {
 #
 # Only the four mainstream targets are pinned; the rest fall through to the existing path
 # rather than risk a binary for the wrong triple.
-_SETUP_UV_PINNED_VERSION="0.12.1"
+_SETUP_UV_PINNED_VERSION="0.12.10"
 
 # Mirrors _uv_glibc_minor in install.sh: "not musl" is not the same as "a glibc new enough to
 # run the GNU build", and astral drops to its musl-static archive below its floor.
@@ -1526,10 +1542,10 @@ _setup_uv_pinned_asset() {
             case "$_supa_arch" in
                 x86_64|amd64)
                     [ "$_supa_glibc" -ge 17 ] 2>/dev/null || return 1
-                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 173d95a0c32d18c896c46ba6fafbf3cf9c14ab74b033f81b76c883ef492a976b" ;;
                 aarch64|arm64)
                     [ "$_supa_glibc" -ge 28 ] 2>/dev/null || return 1
-                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 9ff6b9d4665edcdd3a88dcc73cd1eb641754deb927f14e8c62ebfde6bf4f5f5e" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1540,9 +1556,9 @@ _setup_uv_pinned_asset() {
             fi
             case "$_supa_arch" in
                 x86_64)
-                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                    echo "uv-x86_64-apple-darwin.tar.gz 5296d5aa2b9143360405eea866f8ef4d5dc8986b164eb0dc35e8f876a9304d30" ;;
                 arm64|aarch64)
-                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                    echo "uv-aarch64-apple-darwin.tar.gz 51c6170e8e3a01cef9f33b94f582b7b81ac65046f55d40afb35f9cff5a68c179" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1780,11 +1796,6 @@ fast_install() {
     python -m pip install "$@"
 }
 
-fast_install_sidecar() (
-    unset UV_OVERRIDE
-    fast_install "$@"
-)
-
 cd "$SCRIPT_DIR"
 
 # On Colab without a venv, skip venv-dependent Python deps sections but
@@ -1803,6 +1814,29 @@ _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
 if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
+fi
+# A tracked commit can change without changing the distribution version.
+if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] \
+    && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
+    _SOURCE_TRACKING_PROBE_EXIT=0
+    if "$VENV_DIR/bin/python" -I -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_python_stack as stack
+    tracking = stack._core_tracking_intent(stack._core_repair_source("unsloth"))
+except Exception:
+    sys.exit(2)
+sys.exit(0 if tracking == "main" else 1)
+' "$SCRIPT_DIR" 2>/dev/null; then
+        :
+    else
+        _SOURCE_TRACKING_PROBE_EXIT=$?
+    fi
+    if [ "$_SOURCE_TRACKING_PROBE_EXIT" -ne 1 ]; then
+        _SKIP_VERSION_CHECK=true
+        substep "tracked source update or registry repair requires a shared dependency pass..."
+    fi
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
@@ -1911,6 +1945,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         # signal -- the same one _ensure_xpu_triton keys on.
         _setup_pin_ok=false
         _setup_pin_is_xpu=false
+        _setup_pin_is_rocm=false
         for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
             [ -f "$_setup_pin_tv" ] || continue
             _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
@@ -1922,17 +1957,15 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
                     _setup_pin_min=${_setup_pin_rest%%.*}
                     case "$_setup_pin_maj$_setup_pin_min" in
                         *[!0-9]*) ;;
-                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
-                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -eq 14 ] && _setup_pin_ok=true ;;
                     esac
                     ;;
+                *+rocm*) _setup_pin_is_rocm=true ;;
             esac
             break
         done
-        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
-        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
-        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
-        # are pytorch_triton_xpu-* / triton_xpu-*.
+        # Compiler providers share one import namespace. The shared installer owns repairs;
+        # disk-only checks below prevent the fast path from preserving a conflicting provider.
         # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
         # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
         # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
@@ -1961,15 +1994,34 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
         _setup_generic_triton=false
         if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
-            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info \
+                "$VENV_DIR"/lib/python*/site-packages/triton_windows-*.dist-info \
+                "$VENV_DIR"/lib/python*/site-packages/triton_rocm-*.dist-info; do
                 [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+            done
+        fi
+        _setup_rocm_triton_ready=false
+        _setup_rocm_triton_conflict=false
+        if [ "$_setup_pin_is_rocm" = true ] || [ "$_setup_pin_leaf" = "rocm7.2" ]; then
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton_rocm-3.8.0.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_rocm_triton_ready=true && break
+            done
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info \
+                "$VENV_DIR"/lib/python*/site-packages/triton_windows-*.dist-info \
+                "$VENV_DIR"/lib/python*/site-packages/triton_xpu-*.dist-info \
+                "$VENV_DIR"/lib/python*/site-packages/pytorch_triton_xpu-*.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_rocm_triton_conflict=true && break
             done
         fi
         if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
             substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
-            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            substep "a conflicting triton provider shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif { [ "$_setup_pin_is_rocm" = true ] || [ "$_setup_pin_leaf" = "rocm7.2" ]; } \
+             && { [ "$_setup_rocm_triton_ready" = false ] || [ "$_setup_rocm_triton_conflict" = true ]; }; then
+            substep "ROCm requires only triton-rocm 3.8.0 -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
             # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
@@ -2010,77 +2062,8 @@ else
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
-# Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
-# Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
-# Pre-install into separate directories to avoid runtime pip overhead.
-# The training subprocess prepends the appropriate dir to sys.path.
-_target_has_pkg_version() {
-    _thpv_dir="$1"
-    _thpv_pkg="$2"
-    _thpv_version="$3"
-    [ -d "$_thpv_dir" ] || return 1
-    _thpv_pkg_norm=$(printf '%s' "$_thpv_pkg" | tr '-' '_')
-    for _thpv_metadata in \
-        "$_thpv_dir"/"$_thpv_pkg_norm"-*.dist-info/METADATA \
-        "$_thpv_dir"/"$_thpv_pkg"-*.dist-info/METADATA
-    do
-        [ -f "$_thpv_metadata" ] || continue
-        grep -qx "Version: $_thpv_version" "$_thpv_metadata" && return 0
-    done
-    return 1
-}
-_NEED_T5_INSTALL=false
-if [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate. The tiered venvs a staged run builds land under the
-    # stage root and may never be activated, so removing the live legacy one here
-    # would strip the running install of its only sidecar. The live update does it.
-    if [ -z "$STAGE_ROOT" ]; then
-        _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
-        rm -rf "$STUDIO_HOME/.venv_t5"
-    fi
-    _NEED_T5_INSTALL=true
-fi
-[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
-# Also reinstall when python deps were updated (packages may need rebuild)
-[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
-
-if [ "$_NEED_T5_INSTALL" = true ]; then
-    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
-    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
-    mkdir -p "$VENV_T5_530_DIR"
-    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "tiktoken"
-    step "transformers" "5.3.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
-    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
-    mkdir -p "$VENV_T5_550_DIR"
-    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "tiktoken"
-    step "transformers" "5.5.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
-    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
-    mkdir -p "$VENV_T5_510_DIR"
-    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "tiktoken"
-    step "transformers" "5.10.2 pre-installed"
-fi
+# Fixed Transformers tiers use the shared base 5.16.1 installation. Preserve old
+# sidecar directories; the backend ignores them instead of downgrading the base.
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──

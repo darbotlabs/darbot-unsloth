@@ -1462,14 +1462,13 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
-# Cap the first-use auto-install at the exact vetted patch, so no inflated "0.999.0" or in-range "0.12.999"
-# from a mirror is pulled. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7).
-_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
+# Keep the optional quantizer explicit; its published requirements do not yet
+# admit this fork's Torch 2.14 stack, so the compatibility guard runs first.
+_LLM_COMPRESSOR_SPEC = "llmcompressor==0.13.0"
 
-# Highest transformers llm-compressor 0.10.x/0.12.x runs against (it pins <=4.57.6). It imports
-# TORCH_INIT_FUNCTIONS, removed in transformers 5.x, so a newer-transformers model dies with a cryptic
-# ImportError AFTER the expensive merge. Bump with llm-compressor.
-_LLM_COMPRESSOR_MAX_TRANSFORMERS = "4.57.6"
+# Published llmcompressor 0.13.0 ceiling. quantization_compat also checks
+# Torch and NumPy before installation, model merging, or shadow activation.
+_LLM_COMPRESSOR_MAX_TRANSFORMERS = "5.14.1"
 
 
 def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
@@ -1496,8 +1495,8 @@ def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
         return False, str(transformers_version)
 
 
-# A caller (Unsloth Studio) can point this at an llm-compressor-main shadow (transformers>=5.9 over the
-# existing torch); the subprocess then uses it and the ceiling check is bypassed.
+# A caller can supply a quantizer shadow, but it cannot bypass the published
+# stack compatibility checks performed before entering the export path.
 _COMPRESSED_QUANTIZE_PYTHONPATH_ENV = "UNSLOTH_COMPRESSED_QUANTIZE_PYTHONPATH"
 
 
@@ -1514,6 +1513,9 @@ def install_llm_compressor():
     not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
     Returns (oneshot, QuantizationModifier).
     """
+    from .quantization_compat import require_llm_compressor_compatibility
+
+    require_llm_compressor_compatibility()
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
@@ -7037,6 +7039,10 @@ def _unsloth_save_compressed_tensors(
     """
     import tempfile
 
+    if is_main_process:
+        from .quantization_compat import require_llm_compressor_compatibility
+
+        require_llm_compressor_compatibility()
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     # Resolve a token for the hub push and/or loading a gated calibration dataset in the subprocess.
@@ -7048,14 +7054,12 @@ def _unsloth_save_compressed_tensors(
     if not is_main_process:
         return None
 
-    # Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of writing a
-    # full 16bit checkpoint first. Under the llm-compressor-main shadow the subprocess validates itself, so
-    # the workspace install / ceiling / scheme checks are skipped.
+    # The stack guard above also covers shadows. Validate the quantizer and
+    # scheme before writing a full intermediate 16bit checkpoint.
     _shadow_pythonpath = _compressed_quantize_pythonpath()
     if _shadow_pythonpath is None:
         install_llm_compressor()
-        # llm-compressor cannot run under a newer transformers than its ceiling: the subprocess dies on a
-        # cryptic TORCH_INIT_FUNCTIONS ImportError only AFTER the costly merge.
+        # Check the imported module too, in case it differs from installed metadata.
         _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
         if _exceeds:
             raise RuntimeError(

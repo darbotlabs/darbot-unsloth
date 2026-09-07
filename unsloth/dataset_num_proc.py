@@ -18,7 +18,7 @@ in ways that produced https://github.com/unslothai/unsloth/issues/2693:
    keeps its own default context. The two read different settings.
 
 2. They used ``1`` as the "disable multiprocessing" sentinel, but ``datasets``
-   >= 4.1 (Unsloth pins 4.3.0) pools for any ``num_proc >= 1``, so only ``None``
+   >= 4.1 (this fork pins 5.0.1) pools for any ``num_proc >= 1``, so only ``None``
    is in-process on every supported version.
 """
 

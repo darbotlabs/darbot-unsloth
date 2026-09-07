@@ -20,9 +20,9 @@ needed together:
 4. A prewarm barrier pulls ``max(grad_accum, workers * prefetch)`` microbatches
    before ``train()``: plain prefetch does not promise the first ``__next__``.
 
-The transform reproduces ``unsloth_zoo.dataset_utils.sft_prepare_dataset``'s
-tokenize step exactly (truncation, ``max_length``, double-BOS rule), so rows are
-byte-identical to the eager path.  Anything where that is not provable stays
+The transform reproduces TRL 1.12's plain-text preparation (EOS insertion,
+default special tokens, truncation, and labels), so rows are byte-identical to
+the eager path. Anything where that is not provable stays
 eager; see :func:`decide_online_tokenization`.
 
 Two costs worth stating.  The pass gate counts TRAIN passes only: a lazy eval
@@ -59,9 +59,11 @@ DEFAULT_PREFETCH_FACTOR = 4
 
 ENV_FLAG = "UNSLOTH_STUDIO_ONLINE_TOKENIZATION"
 
-# Presence means already tokenized, or a prompt/completion split the zoo
-# tokenizes with a different function.
-_PRETOKENIZED_COLUMNS = ("input_ids", "labels", "prompt", "completion")
+# These require native preparation rather than the narrow plain-text transform.
+_PRETOKENIZED_COLUMNS = (
+    "input_ids", "labels", "prompt", "completion", "completion_mask",
+    "assistant_masks", "messages", "conversations", "chosen", "rejected",
+)
 
 # Stamped on the view by :func:`attach_online_tokenization`; unsloth's
 # `max_length` scan reads it as proof every row is already truncated to that
@@ -397,6 +399,8 @@ def decide_online_tokenization(
         return veto("processor rather than a plain tokenizer")
     if not callable(processing_class):
         return veto("tokenizer is not callable")
+    if not isinstance(getattr(processing_class, "eos_token", None), str):
+        return veto("tokenizer has no EOS token")
     if model_needs_token_type_ids(model, processing_class):
         return veto("model needs token_type_ids")
 
@@ -468,53 +472,37 @@ def decide_online_tokenization(
 
 
 def resolve_add_special_tokens(processing_class: Any, sample_text: Optional[str]) -> bool:
-    """The zoo's double-BOS rule, copied rather than re-derived (getting it wrong
-    shifts every row by a token).
-
-    ``sft_prepare_dataset`` turns ``add_special_tokens`` off when the rendered
-    text already starts with BOS, or when the chat template emits one.
-    """
-    tokenizer = getattr(processing_class, "tokenizer", None)
-    chat_template = getattr(processing_class, "chat_template", "") or ""
-    if not chat_template and tokenizer is not None:
-        chat_template = getattr(tokenizer, "chat_template", "") or ""
-
-    bos_token = getattr(processing_class, "bos_token", None) or getattr(
-        tokenizer, "bos_token", None
-    )
-    if bos_token is None:
-        return True
-    if isinstance(sample_text, (list, tuple)):
-        sample_text = sample_text[0] if sample_text else None
-    if sample_text is not None and str(sample_text).startswith(bos_token):
-        return False
-    if bos_token in chat_template:
-        return False
+    """Match native TRL's plain-text tokenizer call, not the retired Zoo BOS rule."""
     return True
 
 
 def build_tokenizing_transform(
     tokenizer: Any, text_field: str, max_length: int, add_special_tokens: bool
 ):
-    """A batched ``with_transform`` callable equivalent to the zoo's ``_tokenize``.
+    """A batched ``with_transform`` callable matching native TRL's plain-text path.
 
     ``with_transform`` passes a dict of column lists and wants the same row count
     back, so the batch is encoded in one call, as the eager map does.
 
-    The tokenizer's whole output is passed through, not just ``input_ids``: the
-    eager map keeps it too (``remove_columns`` drops only original columns), and
-    the collator and attention dispatcher branch on which keys are present.
+    Masked and conversational datasets stay eager. For this unmasked path,
+    native preparation builds labels by copying input_ids.
     """
 
     def transform(batch: dict) -> dict:
         texts = batch[text_field]
+        # Native TRL's EOS pre-pass only modifies the canonical text column.
+        if text_field == "text":
+            eos_token = tokenizer.eos_token
+            texts = [text if text.endswith(eos_token) else text + eos_token for text in texts]
         encoded = tokenizer(
             texts,
             truncation = True,
             max_length = max_length,
             add_special_tokens = add_special_tokens,
         )
-        return dict(encoded)
+        result = dict(encoded)
+        result["labels"] = [list(ids) for ids in result["input_ids"]]
+        return result
 
     return transform
 

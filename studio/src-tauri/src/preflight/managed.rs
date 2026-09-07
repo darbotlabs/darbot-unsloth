@@ -303,11 +303,16 @@ fn capability_cache_path() -> Option<PathBuf> {
         );
     }
 
-    dirs::home_dir().map(|home| {
-        home.join(".unsloth")
-            .join("studio")
-            .join("desktop_capability_cache.json")
-    })
+    crate::studio_paths::selected_root().ok()
+        .map(|root| root.join("desktop_capability_cache.json"))
+}
+
+#[cfg(test)]
+#[test]
+fn explicit_environment_capability_cache_follows_the_data_root() {
+    crate::studio_paths::with_explicit_test_environment(|_, data| {
+        assert_eq!(capability_cache_path(), Some(data.join("desktop_capability_cache.json")));
+    });
 }
 
 fn cache_matches(cache: &ManagedCapabilityCache, fingerprint: &ManagedBinFingerprint) -> bool {
@@ -396,10 +401,6 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
 
     #[cfg(windows)]
     {
@@ -459,10 +460,6 @@ async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, S
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
 
     #[cfg(windows)]
     {

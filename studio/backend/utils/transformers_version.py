@@ -10,26 +10,26 @@ MLP layers that only transformers>=5.10 can parse natively, so they go on the
 5.10 sidecar too.  Everything else runs on the ambient default that ships with
 Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
-Two separate target directories are maintained:
-  - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
-  - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
-  - .venv_t5_510/  — transformers 5.10.2 (Gemma 4 Unified / 12B)
+Legacy target directory names are retained for existing installations, but
+all fixed tiers now use the same supported Transformers 5.16.1 release.
+An old sidecar must never silently downgrade the CPython 3.14 runtime.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
 ``adapter_config.json`` and check *that* against the model list.
 
 Strategy:
-  Training and inference run in subprocesses that activate the correct version
-  via sys.path (prepending the appropriate .venv_t5_*/ directory). See:
+  Fixed tiers use the supported base installation without a shadow. A consented
+  latest-version sidecar is activated through sys.path in subprocesses. See:
     - core/training/worker.py
     - core/inference/worker.py
 
-  For export (still in-process), ensure_transformers_version() does a lightweight
-  sys.path swap using the same directories pre-installed by setup.sh.
+  For export (still in-process), ensure_transformers_version() removes stale
+  shadows or activates the consented sidecar as required.
 """
 
 import ast
 import importlib
+import importlib.metadata
 import importlib.util
 import json
 import structlog
@@ -44,6 +44,7 @@ import sysconfig
 import threading
 import time
 from pathlib import Path
+from packaging.version import Version
 
 from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
@@ -375,10 +376,10 @@ _config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
 # probe never imports huggingface_hub before a worker's sidecar venv is activated.
 _probe_tier_cache: dict[str, str] = {}
 
-TRANSFORMERS_510_VERSION = "5.10.2"
-TRANSFORMERS_550_VERSION = "5.5.0"
-TRANSFORMERS_530_VERSION = "5.3.0"
-TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
+TRANSFORMERS_DEFAULT_VERSION = "5.16.1"
+TRANSFORMERS_510_VERSION = TRANSFORMERS_DEFAULT_VERSION
+TRANSFORMERS_550_VERSION = TRANSFORMERS_DEFAULT_VERSION
+TRANSFORMERS_530_VERSION = TRANSFORMERS_DEFAULT_VERSION
 # Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION /
 # TRANSFORMERS_550_VERSION / TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
@@ -419,6 +420,45 @@ def get_transformers_activation_tier(model_name: str, hf_token: str | None = Non
     return tier
 
 
+def _base_transformers_supports(tier: str) -> bool:
+    required = {
+        "default": TRANSFORMERS_DEFAULT_VERSION,
+        "530": TRANSFORMERS_530_VERSION,
+        "550": TRANSFORMERS_550_VERSION,
+        "510": TRANSFORMERS_510_VERSION,
+    }.get(tier)
+    if required is None:
+        return False
+    # Look in the interpreter's installation, not sys.path: an inherited shadow
+    # may advertise an older release even though the supported base is present.
+    paths = list({sysconfig.get_path("purelib"), sysconfig.get_path("platlib")})
+    for distribution in importlib.metadata.distributions(name = "transformers", path = paths):
+        installed = Version(distribution.version)
+        target = Version(required)
+        if installed.major == target.major and installed >= target:
+            return True
+    return False
+
+
+def _without_transformers_shadow_paths(entries) -> list[str]:
+    paths = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR, _VENV_T5_LATEST_DIR)
+    }
+
+    return [path for path in entries if os.path.normcase(os.path.abspath(path)) not in paths]
+
+
+def _remove_transformers_shadow_paths() -> bool:
+    original = list(sys.path)
+    sys.path[:] = _without_transformers_shadow_paths(sys.path)
+    if "PYTHONPATH" in os.environ:
+        os.environ["PYTHONPATH"] = os.pathsep.join(
+            _without_transformers_shadow_paths(os.environ["PYTHONPATH"].split(os.pathsep))
+        )
+    return original != sys.path
+
+
 def activate_transformers_for_subprocess(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version in a subprocess worker.
 
@@ -434,6 +474,15 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     # get_transformers_tier so their local config.json drives the tier (a private/offline
     # _name_or_path must not resolve to an unreachable HF id). Remote adapters use their BASE.
     tier = get_transformers_activation_tier(model_name, hf_token)
+
+    if _base_transformers_supports(tier):
+        _remove_transformers_shadow_paths()
+        logger.info(
+            "Using base transformers (%s) for %s; no fixed-version sidecar required",
+            TRANSFORMERS_DEFAULT_VERSION,
+            model_name,
+        )
+        return
 
     if tier == "latest":
         pinned = latest_venv_pinned_version()
@@ -490,7 +539,7 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     elif tier == "530":
         if not _ensure_venv_t5_530_exists():
             raise RuntimeError(
-                f"Cannot activate transformers 5.3.0: "
+                f"Cannot activate transformers {TRANSFORMERS_530_VERSION}: "
                 f".venv_t5_530 missing at {_VENV_T5_530_DIR}"
             )
         if _VENV_T5_530_DIR not in sys.path:
@@ -1498,13 +1547,17 @@ def _stderr_is_transient(err: str) -> bool:
 def _probe_tier_venvs():
     """tier -> (target_dir, ensure_fn), a function so the later _ensure_* defs resolve. The
     ``default`` entry (empty target_dir = ambient default) is only probed with include_default."""
-    return {
+    tiers = {
         "default": ("", lambda: True),
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
         "550": (_VENV_T5_550_DIR, _ensure_venv_t5_550_exists),
         "510": (_VENV_T5_510_DIR, _ensure_venv_t5_510_exists),
         "latest": (_VENV_T5_LATEST_DIR, _ensure_venv_t5_latest_exists),
     }
+    for tier in ("530", "550", "510"):
+        if _base_transformers_supports(tier):
+            tiers[tier] = ("", lambda: True)
+    return tiers
 
 
 def _probe_tier_order() -> tuple[str, ...]:
@@ -1522,6 +1575,10 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+    if not target_dir and "PYTHONPATH" in env:
+        env["PYTHONPATH"] = os.pathsep.join(
+            _without_transformers_shadow_paths(env["PYTHONPATH"].split(os.pathsep))
+        )
     # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
     apply_token_to_child_env(env, hf_token)
     if _env_offline():
@@ -1621,6 +1678,7 @@ def _probe_tier(
     order = (("default",) + sidecar_order) if include_default else sidecar_order
     probed_count = 0
     skipped_any = False
+    probed_dirs = set()
     for tier in order:
         target_dir, ensure_fn = venvs[tier]
         try:
@@ -1630,6 +1688,9 @@ def _probe_tier(
         if not available:
             skipped_any = True
             continue
+        if target_dir in probed_dirs:
+            continue
+        probed_dirs.add(target_dir)
         probed_count += 1
         ok = _probe_autoconfig(target_dir, model_name, hf_token)
         if ok is True:
@@ -1986,23 +2047,26 @@ def _purge_modules() -> int:
 
 _VENV_T5_530_PACKAGES = (
     f"transformers=={TRANSFORMERS_530_VERSION}",
-    "huggingface_hub==1.8.0",
-    "hf_xet==1.4.2",
-    "tiktoken",
+    "huggingface_hub==1.30.0",
+    "hf_xet==1.6.0",
+    "tokenizers==0.23.2",
+    "tiktoken==0.14.0",
 )
 
 _VENV_T5_510_PACKAGES = (
     f"transformers=={TRANSFORMERS_510_VERSION}",
-    "huggingface_hub==1.8.0",
-    "hf_xet==1.4.2",
-    "tiktoken",
+    "huggingface_hub==1.30.0",
+    "hf_xet==1.6.0",
+    "tokenizers==0.23.2",
+    "tiktoken==0.14.0",
 )
 
 _VENV_T5_550_PACKAGES = (
     f"transformers=={TRANSFORMERS_550_VERSION}",
-    "huggingface_hub==1.8.0",
-    "hf_xet==1.4.2",
-    "tiktoken",
+    "huggingface_hub==1.30.0",
+    "hf_xet==1.6.0",
+    "tokenizers==0.23.2",
+    "tiktoken==0.14.0",
 )
 
 # Backwards-compat alias
@@ -2412,12 +2476,14 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
 
 
 def _ensure_venv_t5_530_exists() -> bool:
-    """Ensure .venv_t5_530/ exists with transformers 5.3.0."""
-    return _ensure_venv_dir(_VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0")
+    """Upgrade the legacy 530 directory to the supported release."""
+    return _ensure_venv_dir(
+        _VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, f"transformers {TRANSFORMERS_530_VERSION}"
+    )
 
 
 def _ensure_venv_t5_550_exists() -> bool:
-    """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
+    """Upgrade the legacy 550 directory to the supported release."""
     return _ensure_venv_dir(
         _VENV_T5_550_DIR,
         _VENV_T5_550_PACKAGES,
@@ -2426,7 +2492,7 @@ def _ensure_venv_t5_550_exists() -> bool:
 
 
 def _ensure_venv_t5_510_exists() -> bool:
-    """Ensure .venv_t5_510/ exists with transformers 5.10.x."""
+    """Upgrade the legacy 510 directory to the supported release."""
     return _ensure_venv_dir(
         _VENV_T5_510_DIR,
         _VENV_T5_510_PACKAGES,
@@ -2546,9 +2612,9 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     utils.transformers_latest before install."""
     return (
         f"transformers=={version}",
-        "huggingface_hub==1.8.0",
-        "hf_xet==1.4.2",
-        "tiktoken",
+        "huggingface_hub==1.30.0",
+        "hf_xet==1.6.0",
+        "tiktoken==0.14.0",
     ) + tuple(extra_packages)
 
 
@@ -2910,34 +2976,33 @@ def ensure_latest_transformers_venv(
 
 # --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
 # Exact, reproducible pins (bump deliberately in review); validated to FP8-quantize Qwen3.5 / Gemma-4 / Llama.
-_LLMC_MAIN_TRANSFORMERS = "5.10.2"
-_LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
-_LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
+_LLMC_MAIN_TRANSFORMERS = "5.14.1"
+_LLMC_VERSION = "0.13.0"
+_LLMC_MAIN_COMPRESSED_TENSORS = "0.18.0"
 # Installed --no-deps (torch untouched); the full runtime set llm-compressor main needs, pinned.
 _VENV_LLMCOMPRESSOR_SPECS = (
     f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
-    f"llmcompressor @ git+https://github.com/vllm-project/llm-compressor@{_LLMC_MAIN_SHA}",
+    f"llmcompressor=={_LLMC_VERSION}",
     f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
-    "huggingface-hub==1.21.0",
-    "hf-xet==1.5.1",
-    "tokenizers==0.22.2",
+    "huggingface-hub==1.30.0",
+    "hf-xet==1.6.0",
+    "tokenizers==0.23.2",
     "safetensors==0.8.0",
     "accelerate==1.14.0",
-    "datasets==5.0.0",
-    "pydantic==2.13.4",
-    "pydantic-core==2.46.4",
-    "typing-inspection==0.4.2",
+    "datasets==5.0.1",
+    "numpy==2.4.6",
+    "pydantic==2.13.5",
+    "pydantic-core==2.46.5",
+    "typing-inspection==0.4.4",
     "loguru==0.7.3",
     "pyyaml==6.0.3",
     "nvidia-ml-py==13.610.43",
     "pillow==12.3.0",
-    "auto-round==0.13.1",
-    "regex==2026.6.28",
+    "auto-round==0.14.2",
+    "regex==2026.9.3",
 )
 # Fingerprint of the pin set; bump the trailing schema version to force a rebuild on layout changes.
-_LLMC_SHADOW_FINGERPRINT = (
-    f"{_LLMC_MAIN_SHA}|{_LLMC_MAIN_TRANSFORMERS}|{_LLMC_MAIN_COMPRESSED_TENSORS}|schema=1"
-)
+_LLMC_SHADOW_FINGERPRINT = "|".join((*_VENV_LLMCOMPRESSOR_SPECS, "schema=2"))
 _LLMC_SHADOW_MARKER = ".unsloth_llmc_fingerprint"
 
 
@@ -2969,6 +3034,25 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     All specs are installed with --no-deps into a --target dir (mirrors the transformers sidecars),
     so the workspace torch is never touched. Returns True on success.
     """
+    from importlib.metadata import PackageNotFoundError, version
+    from packaging.version import Version
+
+    try:
+        torch_version = Version(version("torch"))
+    except PackageNotFoundError:
+        logger.error("Compressed export requires a supported PyTorch installation.")
+        return False
+    # The latest stable compressor's published contract caps torch at 2.13.
+    # Never install its --no-deps shadow over the 2.14 runtime and pretend it
+    # is supported. GGUF and uncompressed exports do not use this sidecar.
+    if Version(torch_version.base_version) > Version("2.13.0"):
+        logger.error(
+            "llmcompressor 0.13.0 supports torch<=2.13.0, not torch %s. "
+            "FP8/FP4 compressed export is unavailable on this stack; use GGUF "
+            "or uncompressed export until upstream supports torch 2.14.",
+            torch_version,
+        )
+        return False
     if _llmcompressor_shadow_is_valid():
         return True
     if _llmcompressor_main_disabled():
@@ -2990,12 +3074,11 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
     os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
 
-    # Prefer uv then pip; every spec at once, --no-deps, prereleases allowed (compressed-tensors).
+    # Prefer uv then pip; every spec at once, stable releases only.
     base = [
         "--target",
         _VENV_LLMCOMPRESSOR_DIR,
         "--no-deps",
-        "--prerelease=allow",
         *_VENV_LLMCOMPRESSOR_SPECS,
     ]
     cmds = []
@@ -3007,8 +3090,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             "-m",
             "pip",
             "install",
-            *[a for a in base if a != "--prerelease=allow"],
-            "--pre",
+            *base,
         ]
     )
 
@@ -3039,8 +3121,8 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         logger.warning("llm-compressor-main shadow install failed with %s; trying next", cmd[0])
 
     logger.error(
-        "Failed to provision llm-compressor-main shadow (spec: llmcompressor@%s). Output:\n%s",
-        _LLMC_MAIN_SHA,
+        "Failed to provision llm-compressor shadow (spec: llmcompressor==%s). Output:\n%s",
+        _LLMC_VERSION,
         last_out[-4000:],
     )
     return False
@@ -3091,12 +3173,9 @@ def _deactivate_5x() -> None:
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
-    Uses sys.path with .venv_t5_510/, .venv_t5_550/, or .venv_t5_530/
-    (pre-installed by setup.sh):
-      • Need 5.10.x → prepend .venv_t5_510/ to sys.path, purge modules.
-      • Need 5.5.0 → prepend .venv_t5_550/ to sys.path, purge modules.
-      • Need 5.3.0 → prepend .venv_t5_530/ to sys.path, purge modules.
-      • Need 4.x  → remove all .venv_t5_*/ from sys.path, purge modules.
+    Prefer the supported base installation for every fixed tier. A consented
+    latest-version sidecar remains isolated; fixed shadows are only a fallback
+    when the base installation does not satisfy the required release.
 
     For custom-named LoRA adapters, the base model is resolved before checking
     (from ``adapter_config.json`` or, for adapter_model-only LoRAs, the directory
@@ -3116,6 +3195,11 @@ def ensure_transformers_version(model_name: str) -> None:
         # Gate on a real local config.json: a checkpoint carries config the base may not
         # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
+
+    if _base_transformers_supports(tier):
+        tier = "default"
+        if _remove_transformers_shadow_paths():
+            _deactivate_5x()
 
     if tier == "latest":
         pinned = latest_venv_pinned_version()
@@ -3167,8 +3251,11 @@ def ensure_transformers_version(model_name: str) -> None:
             return
         # Different 5.x -> need to switch (e.g. 5.3.0 loaded but need 5.10.x).
         in_memory_major = int(in_memory.split(".")[0])
-        if in_memory_major == target_major and venv_dir is None:
-            # Both are default (4.x) - close enough.
+        if (
+            in_memory_major == target_major
+            and venv_dir is None
+            and Version(in_memory) >= Version(target_version)
+        ):
             logger.info(
                 "transformers %s already loaded — correct for '%s'",
                 in_memory,

@@ -771,7 +771,36 @@ class TestBuildPipCmdUpgradeIntent:
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
 
 
+@pytest.fixture
+def isolated_core_repair(monkeypatch):
+    original_rmtree = ips.shutil.rmtree
+    root = Path.cwd().resolve()
+
+    def cleanup(path, *args, **kwargs):
+        if Path(path).resolve().is_relative_to(root) and Path(path).resolve() != root:
+            return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(ips.shutil, "rmtree", cleanup)
+    monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda name: [])
+    monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda name: [])
+    monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: pytest.fail("unmocked package mutation"))
+    monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: pytest.fail("unmocked package mutation"))
+    monkeypatch.setattr(ips, "_remember_core_source", lambda source: None)
+
+
+@pytest.mark.usefixtures("isolated_core_repair")
 class TestDamagedCorePayloadRepair:
+    @pytest.fixture(autouse = True)
+    def stage_replacements(self, monkeypatch, tmp_path):
+        paths = []
+
+        def stage(source):
+            path = tmp_path / f"replacement-{len(paths)}"
+            path.mkdir()
+            paths.append(path)
+            return str(path)
+
+        monkeypatch.setattr(ips, "_stage_replacement", stage)
     """An upgrade of a distribution already at the wanted version installs
     nothing: uv audits it, pip calls it satisfied, and both read metadata a
     quarantine of the payload leaves intact."""
@@ -806,7 +835,7 @@ class TestDamagedCorePayloadRepair:
             lambda name, **kwargs: ["gone"] if name == "unsloth-zoo" else [],
         )
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
-        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: calls.append(args))
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args, **kwargs: calls.append(args))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
         assert len(calls) == 1
@@ -844,7 +873,7 @@ class TestDamagedCorePayloadRepair:
         monkeypatch.setattr(
             ips.install_manifest, "damaged_payload_files", lambda name, **kwargs: ["gone"]
         )
-        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args, **kwargs: False)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is False
 
@@ -862,7 +891,7 @@ class TestDamagedCorePayloadRepair:
         # host: a source checkout with no unsloth distribution installed would
         # fail this on the environment rather than on the code.
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
-        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args, **kwargs: False)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
 
@@ -923,7 +952,7 @@ class TestDamagedCorePayloadRepair:
 
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
-        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args, **kwargs: True)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is False
@@ -940,6 +969,7 @@ class TestDamagedCorePayloadRepair:
         assert repair < core
 
 
+@pytest.mark.usefixtures("isolated_core_repair")
 class TestDuplicateCoreMetadataRepair:
     def test_an_unrewritable_record_stops_the_repair_before_pip_runs(
         self, tmp_path, monkeypatch, capsys
@@ -1164,7 +1194,7 @@ class TestDuplicateCoreMetadataRepair:
                     "--no-cache-dir",
                     "--no-deps",
                     "--force-reinstall",
-                    "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+                    str(Path("/src/unsloth") / "studio" / "backend" / "vendor" / "unsloth_zoo_compat"),
                 ),
             ),
         ],
@@ -1891,7 +1921,7 @@ class TestDuplicateCoreMetadataRepair:
         describes a payload that is gone."""
         probes = {
             "unsloth": iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])),
-            "unsloth-zoo": iter((["", "2026.8.15"],)),
+            "unsloth-zoo": iter((["", "2026.8.15"], ["2026.8.15"], [])),
         }
         events = []
 
@@ -1902,9 +1932,9 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
-        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
-        # The second package cannot be staged, so the repair fails after the first one has already been reinstalled.
-        staged = iter(("/staged", None))
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args, **kwargs: args[-1] != "unsloth-zoo")
+        # Both wheels are prepared first; installation of the second can still fail.
+        staged = iter(("/staged-core", "/staged-zoo"))
         monkeypatch.setattr(ips, "_stage_replacement", lambda _n: next(staged))
         monkeypatch.setattr(
             ips._QuarantinedMetadata, "discard", lambda _self: events.append("discard")
@@ -2241,10 +2271,8 @@ class TestDuplicateCoreMetadataRepair:
         assert '"download"' not in source
         assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
 
-    def test_a_git_overlay_is_staged_before_the_uninstall_loop(self, monkeypatch):
-        """--local pulls unsloth-zoo from git, so an overlay is a network fetch
-        too. Skipping staging for it meant an unreachable GitHub left the
-        package uninstalled."""
+    def test_a_vendored_overlay_is_staged_before_the_uninstall_loop(self, monkeypatch):
+        """Building the selected vendored source must succeed before uninstall."""
         probes = {"unsloth-zoo": iter((["old", "new"], ["new"], [], ["new"]))}
         order = []
 
@@ -2263,7 +2291,9 @@ class TestDuplicateCoreMetadataRepair:
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth-zoo",), local_repo = "/src/unsloth")
-        assert order[0] == ("stage", "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo")
+        assert order[0] == (
+            "stage", str(Path("/src/unsloth") / "studio" / "backend" / "vendor" / "unsloth_zoo_compat")
+        )
         assert order[1] == ("uninstall",)
 
     def test_an_editable_overlay_stages_the_checkout(self, monkeypatch):
@@ -2373,7 +2403,7 @@ class TestDuplicateCoreMetadataRepair:
                 "--no-cache-dir",
                 "--no-deps",
                 "--force-reinstall",
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+                str(Path("/src/unsloth") / "studio" / "backend" / "vendor" / "unsloth_zoo_compat"),
             ),
         ]
         assert all(call[2]["constrain"] is False for call in installs)

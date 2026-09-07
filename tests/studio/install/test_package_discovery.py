@@ -5,6 +5,7 @@ import fnmatch
 import os
 import re
 import subprocess
+import tarfile
 import zipfile
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -129,3 +130,96 @@ def test_built_wheel_has_no_backend_tests():
     names = zipfile.ZipFile(wheels[-1]).namelist()
     leaked = [n for n in names if n.startswith("studio/backend/") and "/tests/" in n]
     assert not leaked, f"{wheels[-1].name} ships {len(leaked)} backend test files"
+
+
+def test_built_wheel_ships_installable_zoo_companion_source():
+    wheels = sorted((REPO_ROOT / "dist").glob("unsloth-*.whl"))
+    if not wheels:
+        pytest.skip("no built wheel in dist/, run `python -m build` first")
+    with zipfile.ZipFile(wheels[-1]) as wheel:
+        names = set(wheel.namelist())
+    companion = "studio/backend/vendor/unsloth_zoo_compat"
+    required = {
+        "studio/install_zoo.py",
+        "studio/python_policy.py",
+        f"{companion}/pyproject.toml",
+        f"{companion}/README.md",
+        f"{companion}/LICENSE",
+        f"{companion}/COPYING",
+        f"{companion}/unsloth_zoo/__init__.py",
+    }
+    assert required <= names, f"wheel is missing Zoo bootstrap sources: {required - names}"
+    generated = [
+        name
+        for name in names
+        if name.startswith(f"{companion}/")
+        and (
+            "/build/" in name
+            or "/dist/" in name
+            or ".egg-info/" in name
+            or name.endswith((".pyc", ".pyo"))
+        )
+    ]
+    assert not generated, f"wheel contains companion build artifacts: {generated[:3]}"
+
+
+def test_built_wheel_ships_frontend_and_desktop_source_dependencies():
+    wheels = sorted((REPO_ROOT / "dist").glob("unsloth-*.whl"))
+    if not wheels:
+        pytest.skip("no built wheel in dist/, run `python -m build` first")
+    with zipfile.ZipFile(wheels[-1]) as wheel:
+        names = set(wheel.namelist())
+    required = {
+        "studio/frontend/src/components/ui/data-table.tsx",
+        "studio/frontend/src/components/ui/data-table-model.ts",
+        "studio/src-tauri/src/studio_paths.rs",
+    }
+    assert required <= names, f"wheel is missing application source dependencies: {required - names}"
+
+
+def test_built_wheel_matches_current_lifecycle_sources():
+    wheels = sorted((REPO_ROOT / "dist").glob("unsloth-*.whl"))
+    if not wheels:
+        pytest.skip("no built wheel in dist/, run `python -m build` first")
+    sources = (
+        "studio/install_zoo.py",
+        "studio/install_python_stack.py",
+        "studio/install_manifest.py",
+        "studio/python_policy.py",
+        "studio/setup.ps1",
+        "studio/setup.sh",
+        "studio/backend/requirements/no-torch-runtime.txt",
+        "studio/backend/requirements/no-torch-constraints.txt",
+        "studio/backend/vendor/unsloth_zoo_compat/pyproject.toml",
+        "unsloth_cli/_environment.py",
+    )
+    with zipfile.ZipFile(wheels[-1]) as wheel:
+        stale = [
+            source
+            for source in sources
+            if wheel.read(source) != (REPO_ROOT / source).read_bytes()
+        ]
+    assert not stale, f"rebuild the wheel to include current lifecycle sources: {stale}"
+
+
+def test_built_sdist_matches_current_installers_and_policy():
+    archives = sorted((REPO_ROOT / "dist").glob("unsloth-*.tar.gz"))
+    if not archives:
+        pytest.skip("no built sdist in dist/, run `python -m build` first")
+    sources = (
+        "pyproject.toml",
+        "MANIFEST.in",
+        "README.md",
+        "install.ps1",
+        "install.sh",
+        "docker/Dockerfile",
+        "docker/Dockerfile.studio",
+    )
+    prefix = archives[-1].name.removesuffix(".tar.gz")
+    with tarfile.open(archives[-1]) as archive:
+        stale = []
+        for source in sources:
+            with archive.extractfile(f"{prefix}/{source}") as bundled:
+                if bundled.read() != (REPO_ROOT / source).read_bytes():
+                    stale.append(source)
+    assert not stale, f"rebuild the sdist to include current installers and policy: {stale}"

@@ -416,8 +416,10 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
           ],
         }),
       }),
-      destroy: async () => {
-        destroyed.push("success");
+      loadingTask: {
+        destroy: async () => {
+          destroyed.push("success");
+        },
       },
     },
     {
@@ -426,8 +428,10 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
       getPage: async () => {
         throw new Error("page extraction failed");
       },
-      destroy: async () => {
-        destroyed.push("failure");
+      loadingTask: {
+        destroy: async () => {
+          destroyed.push("failure");
+        },
       },
     },
   ];

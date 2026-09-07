@@ -396,7 +396,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       # The version is load bearing: everything this workflow asks the client to
       # do has to EXIST in the pin.
@@ -491,7 +491,9 @@ jobs:
   t4-smoke:
     name: T4 smoke
     needs: gate
-    if: needs.gate.outputs.should_run == 'true'
+    # T4/sm_75 is not a supported Triton 3.8 full-training target. Re-enable
+    # only after an explicitly qualified workload and Python 3.14 image exist.
+    if: needs.gate.outputs.should_run == 'true' && vars.UNSLOTH_KAGGLE_PYTHON314_VALIDATED == 'true'
     runs-on: ubuntu-latest
     # A ONE-ELEMENT matrix, whose only job is to carry the account the gate
     # chose into a context that `secrets[...]` can be indexed with.
@@ -639,7 +641,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       # The version is load bearing: everything this workflow asks the client to
       # do has to EXIST in the pin.
@@ -749,7 +751,7 @@ jobs:
           else
             RESOLVED=''
             for attempt in 1 2 3; do
-              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              LS="$(git ls-remote https://github.com/darbotlabs/darbot-unsloth "$UNSLOTH_REF" || true)"
               # An annotated tag lists the tag OBJECT first and the commit it
               # points at on the `^{}` line, which is what pip can check out.
               PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
@@ -788,7 +790,7 @@ jobs:
           if [ -n "$RESOLVED" ]; then
             EXISTS=''
             for attempt in 1 2 3; do
-              if git fetch --quiet --depth=1 https://github.com/unslothai/unsloth "$RESOLVED"; then
+              if git fetch --quiet --depth=1 https://github.com/darbotlabs/darbot-unsloth "$RESOLVED"; then
                 EXISTS=yes
                 break
               fi

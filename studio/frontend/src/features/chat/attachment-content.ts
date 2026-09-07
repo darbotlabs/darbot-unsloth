@@ -725,7 +725,7 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
     const { text } = await extractText(pdf);
     return normalizeExtractedText(text.join("\n\n"));
   } finally {
-    await pdf.destroy();
+    await pdf.loadingTask.destroy();
   }
 }
 

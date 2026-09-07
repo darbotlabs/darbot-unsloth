@@ -16,7 +16,7 @@ function formatDesktopVersion(version: string): string {
 export function DesktopUpdateNote(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
-  if (!update) return null;
+  if (!update || update.updatePolicyMode === "disabled") return null;
   return (
     <p className="pb-1 text-xs text-muted-foreground leading-relaxed">
       {t("settings.about.update.desktopManaged")}
@@ -31,6 +31,20 @@ export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
   if (!update) return null;
+  if (update.updatePolicyMode === "disabled") {
+    return (
+      <SettingsRow label={t("settings.about.releaseNotes")}>
+        <a
+          href="https://github.com/darbotlabs/darbot-unsloth/releases"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm text-primary hover:underline"
+        >
+          {t("settings.about.update.openReleasePage")}
+        </a>
+      </SettingsRow>
+    );
+  }
 
   const checking = update.status === "checking";
   const preparing = update.status === "preparing";

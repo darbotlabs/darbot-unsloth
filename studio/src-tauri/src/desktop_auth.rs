@@ -54,23 +54,16 @@ impl AuthError {
     }
 }
 
-fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
-        .join("auth")
-        .join(filename)
+fn auth_secret_path(root: &Path, filename: &str) -> PathBuf {
+    root.join("auth").join(filename)
 }
 
 fn auth_url(port: u16, route: &str) -> String {
     format!("http://127.0.0.1:{port}/api/auth/{route}")
 }
 
-fn home_dir() -> Result<PathBuf, String> {
-    dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())
-}
-
-fn desktop_secret_path() -> Result<PathBuf, String> {
-    Ok(auth_secret_path(&home_dir()?, ".desktop_secret"))
+pub(crate) fn desktop_secret_path() -> Result<PathBuf, String> {
+    Ok(auth_secret_path(&crate::studio_paths::selected_root()?, ".desktop_secret"))
 }
 
 fn read_secret_if_exists(path: &Path) -> Result<Option<String>, String> {
@@ -238,10 +231,6 @@ async fn provision_desktop_auth() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
-    // Scrub so provisioning writes match what the Rust auth code reads.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

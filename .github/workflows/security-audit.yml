@@ -192,11 +192,11 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26.8.1'
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
@@ -834,7 +834,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install scan_packages.py runtime deps
         # scan_packages.py imports requests + packaging at runtime to
@@ -1027,7 +1027,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Sanity-check scan_npm_packages.py
         run: |
@@ -1116,11 +1116,11 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26.8.1'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install Unsloth frontend deps (--ignore-scripts)
         # `npm audit signatures` requires node_modules to be populated.

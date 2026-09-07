@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import re
@@ -23,6 +24,83 @@ EXTRAS_TXT = REQ_ROOT / "extras.txt"
 EXTRAS_NO_DEPS_TXT = REQ_ROOT / "extras-no-deps.txt"
 OVERRIDES_TXT = REQ_ROOT / "overrides.txt"
 TRITON_KERNELS_TXT = REQ_ROOT / "triton-kernels.txt"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (r"G:\selected source", r"G:\selected source[studio]"),
+        (
+            "unsloth @ https://example.invalid/source.zip#sha256=abc",
+            "unsloth[studio] @ https://example.invalid/source.zip#sha256=abc",
+        ),
+    ],
+)
+def test_no_torch_source_requests_the_studio_extra(source, expected):
+    assert ips._studio_core_install_spec(source) == expected
+
+
+def test_no_torch_local_overlay_resolves_studio_without_zoo(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    monkeypatch.setattr(ips, "pip_install", lambda *args, **kwargs: calls.append((args, kwargs)))
+    ips._overlay_local_core_packages("selected-checkout")
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[-2:] == ("-e", "selected-checkout[studio]")
+    assert "--no-deps" not in args
+    assert kwargs["constrain"] is True
+
+
+@pytest.mark.parametrize("use_uv", [False, True])
+def test_no_torch_requirement_files_resolve_normally_in_both_installers(
+    monkeypatch, tmp_path, use_uv,
+):
+    requirement = tmp_path / "requirements.txt"
+    requirement.write_text("peft==0.20.0\nsnac==1.2.1\nnumpy==2.5.3\n", encoding = "utf-8")
+    calls = []
+
+    def capture(command, **kwargs):
+        content = Path(command[command.index("-r") + 1]).read_text(encoding = "utf-8")
+        calls.append((command, content))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    monkeypatch.setattr(ips, "USE_UV", use_uv)
+    monkeypatch.setattr(ips, "IS_WINDOWS", False)
+    monkeypatch.setattr(ips, "PLATFORM_LACKS_TORCHCODEC_WHEEL", False)
+    monkeypatch.setattr(ips.subprocess, "run", capture)
+    monkeypatch.setattr(ips, "run", lambda label, command, **kwargs: capture(command))
+    ips.pip_install("Torch-free closure", "--no-deps", req = requirement, constrain = False)
+    assert len(calls) == 1
+    command, content = calls[0]
+    assert "--no-deps" not in command
+    assert any(arg.endswith("no-torch-constraints.txt") for arg in command)
+    assert content == "numpy==2.5.3\n"
+
+
+@pytest.mark.parametrize("no_torch", [False, True])
+@pytest.mark.parametrize("constrain", [False, True])
+def test_no_torch_exclusions_cannot_be_disabled_with_general_constraints(
+    monkeypatch, tmp_path, no_torch, constrain,
+):
+    shared = tmp_path / "constraints.txt"
+    shared.write_text("", encoding = "utf-8")
+    exclusions = tmp_path / "no-torch-constraints.txt"
+    exclusions.write_text("torch<0\n", encoding = "utf-8")
+    monkeypatch.setattr(ips, "NO_TORCH", no_torch)
+    monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+    monkeypatch.setattr(ips, "CONSTRAINTS", shared)
+    assert ips._install_constraint_paths(constrain) == (
+        ([shared] if constrain else []) + ([exclusions] if no_torch else [])
+    )
+
+
+def test_missing_no_torch_exclusions_fail_before_resolution(monkeypatch, tmp_path):
+    monkeypatch.setattr(ips, "NO_TORCH", True)
+    monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+    with pytest.raises(RuntimeError, match = "no-torch exclusion"):
+        ips._install_constraint_paths(False)
 
 
 # ── _filter_requirements unit tests (synthetic) ───────────────────────
@@ -115,6 +193,18 @@ class TestFilterRequirements:
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
         assert non_blank == ["numpy"]
+
+    def test_canonical_ml_names_and_direct_references_are_filtered(self, tmp_path):
+        req = self._write_req(
+            tmp_path,
+            "sentence_transformers==6.0.1\nPEFT>=0.20\naccelerate\n"
+            "descript_audiotools @ https://example.test/audio.zip#sha256=abc\n"
+            "protobuf @ https://example.test/protobuf.whl#sha256=def\n",
+        )
+        result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
+        assert result.read_text(encoding = "utf-8") == (
+            "protobuf @ https://example.test/protobuf.whl#sha256=def\n"
+        )
 
     def test_whitespace_and_blank_lines_preserved(self, tmp_path):
         req = self._write_req(
@@ -254,7 +344,10 @@ class TestRealRequirementsFiltering:
         expected = [
             l
             for l in original
-            if not any(l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES)
+            if not any(
+                l.strip().lower().replace("_", "-").startswith(p)
+                for p in ips.NO_TORCH_SKIP_PACKAGES
+            )
         ]
         assert filtered == expected, (
             f"Filtered extras.txt should match expected.\n"
@@ -276,7 +369,10 @@ class TestRealRequirementsFiltering:
         expected = [
             l
             for l in original
-            if not any(l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES)
+            if not any(
+                l.strip().lower().replace("_", "-").startswith(p)
+                for p in ips.NO_TORCH_SKIP_PACKAGES
+            )
         ]
         assert filtered == expected
 
@@ -290,11 +386,12 @@ class TestRealRequirementsFiltering:
             if pkg in EXTRAS_TXT.read_text(encoding = "utf-8").lower():
                 assert pkg in filtered_text, f"{pkg} should survive NO_TORCH filtering"
 
-    def test_extras_no_deps_txt_trl_preserved(self):
-        """trl should survive NO_TORCH filtering in extras-no-deps.txt."""
+    def test_extras_no_deps_txt_ml_packages_are_deferred(self):
+        """Training/audio packages have mandatory Torch dependencies."""
         result = self._filter(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
-        filtered_text = Path(result).read_text(encoding = "utf-8").lower()
-        assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
+        filtered = self._non_blank_non_comment(result)
+        for name in ("trl", "peft", "sentence-transformers", "descript-audio", "julius", "snac"):
+            assert not any(line.replace("_", "-").startswith(name) for line in filtered)
 
 
 # ── NO_TORCH constant tests ──────────────────────────────────────────
@@ -459,26 +556,53 @@ class TestInstallPythonStackSubprocessMock:
 
         env = {"SKIP_STUDIO_BASE": "1"} if skip_base else {}
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", no_torch),
-            mock.patch.object(ips, "IS_MACOS", is_macos),
-            mock.patch.object(ips, "IS_WINDOWS", is_windows),
-            mock.patch.object(ips, "USE_UV", True),
-            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
-            mock.patch.object(ips, "VERBOSE", False),
-            mock.patch.object(ips, "_ensure_flash_attn", return_value = None),
-            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
-            mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
-            mock.patch("subprocess.run", side_effect = mock_run),
-            mock.patch.object(ips, "_bootstrap_uv", return_value = True),
-            mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
-            mock.patch("pathlib.Path.is_dir", return_value = True),
-            mock.patch("pathlib.Path.is_file", return_value = True),
-        ):
+        with contextlib.ExitStack() as patches:
+            for patcher in (
+                mock.patch.object(ips, "NO_TORCH", no_torch),
+                mock.patch.object(ips, "IS_MACOS", is_macos),
+                mock.patch.object(ips, "IS_WINDOWS", is_windows),
+                mock.patch.object(ips, "USE_UV", True),
+                mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+                mock.patch.object(ips, "VERBOSE", False),
+                mock.patch.object(ips, "_ensure_flash_attn", return_value = None),
+                mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+                mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
+                mock.patch("subprocess.run", side_effect = mock_run),
+                mock.patch.object(ips, "_bootstrap_uv", return_value = True),
+                mock.patch.object(ips, "_repair_duplicate_core_metadata", return_value = True),
+                mock.patch.object(ips, "_repair_damaged_core_payload", return_value = True),
+                mock.patch.object(ips, "_repair_incompatible_protobuf_wheel"),
+                mock.patch.object(ips, "_retire_legacy_no_torch_packages", return_value = True),
+                mock.patch.object(ips, "_ensure_cuda_triton", return_value = True),
+                mock.patch.object(ips, "_ensure_rocm_triton", return_value = True),
+                mock.patch.object(ips, "_ensure_xpu_triton", return_value = True),
+                mock.patch.object(ips, "_ensure_expected_torch_flavor", return_value = True),
+                mock.patch.object(ips, "_ensure_cuda_torch"),
+                mock.patch.object(ips, "_ensure_rocm_torch"),
+                mock.patch.object(ips, "_ensure_xpu_torch"),
+                mock.patch.object(ips, "_ensure_cpu_torch"),
+                mock.patch.object(ips, "_exact_distribution_spec_is_installed", return_value = False),
+                mock.patch.object(ips, "_has_working_git", return_value = True),
+                mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
+                mock.patch("pathlib.Path.is_dir", return_value = True),
+                mock.patch("pathlib.Path.is_file", return_value = True),
+            ):
+                patches.enter_context(patcher)
             with mock.patch.dict(os.environ, env, clear = False):
                 ips.install_python_stack()
 
         return [" ".join(str(c) for c in cmd) for cmd in captured_cmds]
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    def test_no_torch_never_installs_zoo_or_uses_no_deps_for_requirements(self, skip_base):
+        cmds = self._capture_install(
+            no_torch = True, is_macos = False, is_windows = False, skip_base = skip_base,
+        )
+        assert not any("install_zoo.py" in cmd or "unsloth_zoo_compat" in cmd for cmd in cmds)
+        assert not any("unsloth-zoo" in cmd for cmd in cmds)
+        assert not any("triton-kernels" in cmd for cmd in cmds)
+        assert not any(" -r " in cmd and "--no-deps" in cmd for cmd in cmds)
+
 
     def _cmds_contain_file(self, cmds: list[str], filename: str) -> bool:
         """Check if any captured command references the given filename."""
@@ -627,6 +751,74 @@ class TestInstallPythonStackSubprocessMock:
             "no manifest reached the contained root, so this run proves nothing about "
             "where the installer writes"
         )
+
+
+class TestLegacyNoTorchRetirement:
+    @pytest.mark.parametrize("torch_present", [False, True])
+    def test_metadata_driven_retirement_includes_transitive_ml_dependencies(
+        self, monkeypatch, torch_present,
+    ):
+        from importlib import metadata
+        from types import SimpleNamespace
+
+        installed = {
+            "unsloth-zoo": ["torch>=2.14"],
+            "accelerate": ["torch>=2"],
+            "trl": ["accelerate>=1.4"],
+            "librosa": ["numpy", 'torch; extra == "testing"'],
+        }
+        if torch_present:
+            installed["torch"] = []
+
+        def distribution(name):
+            if name not in installed:
+                raise metadata.PackageNotFoundError(name)
+            return SimpleNamespace(requires = installed[name])
+
+        removed = []
+        def uninstall(name):
+            removed.append(name)
+            installed.pop(name)
+            return True
+
+        monkeypatch.setattr(ips, "NO_TORCH", True)
+        monkeypatch.setattr(metadata, "distribution", distribution)
+        monkeypatch.setattr(ips, "_uninstall_distribution", uninstall)
+        assert ips._retire_legacy_no_torch_packages() is True
+        assert removed == ([] if torch_present else ["accelerate", "trl", "unsloth-zoo"])
+
+    @pytest.mark.parametrize("reported_success", [False, True])
+    def test_failed_retirement_does_not_certify_the_profile(self, monkeypatch, reported_success):
+        from importlib import metadata
+        from types import SimpleNamespace
+
+        def distribution(name):
+            if name != "unsloth-zoo":
+                raise metadata.PackageNotFoundError(name)
+            return SimpleNamespace(requires = ["torch"])
+
+        monkeypatch.setattr(ips, "NO_TORCH", True)
+        monkeypatch.setattr(metadata, "distribution", distribution)
+        monkeypatch.setattr(ips, "_uninstall_distribution", lambda name: reported_success)
+        assert ips._retire_legacy_no_torch_packages() is False
+
+    def test_malformed_metadata_does_not_disclose_requirement_credentials(self, monkeypatch, capsys):
+        from importlib import metadata
+        from types import SimpleNamespace
+
+        def distribution(name):
+            if name != "unsloth-zoo":
+                raise metadata.PackageNotFoundError(name)
+            return SimpleNamespace(
+                requires = ["torch @ https://user:credential-marker@example.invalid/pkg extra text"],
+            )
+
+        monkeypatch.setattr(ips, "NO_TORCH", True)
+        monkeypatch.setattr(metadata, "distribution", distribution)
+        monkeypatch.setattr(ips, "_uninstall_distribution", lambda name: pytest.fail("Unexpected removal"))
+        assert ips._retire_legacy_no_torch_packages() is False
+        output = capsys.readouterr()
+        assert "credential-marker" not in output.out + output.err
 
 
 # ── Overrides skip structural checks ─────────────────────────────────

@@ -43,7 +43,99 @@ BACKEND = REPO / "studio" / "backend"
 # follows silently from an edit elsewhere.
 # Asserting only "newer than the floor" was not enough: 3.11 and 3.12 satisfy that too, and either would quietly give up
 # the removals-and-deprecations coverage that is the whole reason the single leg is the newest one.
-CEILING = "3.13"
+CEILING = "3.14.7"
+
+
+def test_clean_machine_published_mode_downloads_the_fork_not_upstream():
+    text = (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(
+        encoding = "utf-8"
+    )
+    assert "https://unsloth.ai/install." not in text
+    for suffix in ("sh", "ps1"):
+        assert (
+            f"https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.{suffix}"
+            in text
+        )
+
+
+def test_windows_clean_machine_verifies_installed_source(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    import pytest
+
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["windows"]["steps"]
+        if item.get("name") == "Assert this ref's Python was really put under test"
+    )
+    assert "& $py -I -c $probe $env:GITHUB_WORKSPACE" in step["run"]
+    probe = step["run"].split("$probe = @'\n", 1)[1].split("\n'@", 1)[0]
+    checkout = tmp_path / "checkout"
+    module = SimpleNamespace(__file__ = str(checkout / "studio" / "__init__.py"))
+    monkeypatch.setitem(sys.modules, "studio", module)
+    monkeypatch.setattr(sys, "argv", ["probe", str(checkout)])
+    exec(probe)
+    module.__file__ = str(tmp_path / "unrelated-wheel" / "studio" / "__init__.py")
+    with pytest.raises(AssertionError, match = "CI expected"):
+        exec(probe)
+
+
+def test_upstream_zoo_tests_import_maintained_companion(tmp_path):
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "consolidated-tests-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    step = next(
+        item
+        for job in workflow["jobs"].values()
+        for item in job.get("steps", [])
+        if 'ZOO_TESTS="$RUNNER_TEMP/unsloth-zoo/tests"' in item.get("run", "")
+    )
+    assert step["working-directory"] == "${{ github.workspace }}"
+    assert "--import-mode=importlib" in step["run"]
+    assert "pythonpath=$_zoo_site $RUNNER_TEMP/unsloth-zoo" in step["run"]
+
+    core, upstream, installed = (tmp_path / name for name in ("core", "upstream", "installed"))
+    for root, package, origin in (
+        (core, "tests", "core-tests"),
+        (upstream, "tests", "upstream-tests"),
+        (upstream, "unsloth_zoo", "capped-upstream"),
+        (installed, "unsloth_zoo", "maintained"),
+    ):
+        directory = root / package
+        directory.mkdir(parents = True)
+        (directory / "__init__.py").write_text(f"ORIGIN = {origin!r}\n", encoding = "utf-8")
+    (upstream / "pytest.ini").write_text("[pytest]\npythonpath = .\n", encoding = "utf-8")
+    (upstream / "tests" / "test_identity.py").write_text(
+        "import unsloth_zoo, tests\n"
+        "def test_identity():\n"
+        "    assert unsloth_zoo.ORIGIN == 'maintained'\n"
+        "    assert tests.ORIGIN == 'upstream-tests'\n",
+        encoding = "utf-8",
+    )
+    env = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1", PYTHONDONTWRITEBYTECODE = "1")
+    env["PYTEST_ADDOPTS"] = shlex.join([
+        "--import-mode=importlib", "-o",
+        "pythonpath=" + shlex.join([str(installed), str(upstream)]),
+    ])
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", str(upstream / "tests"),
+         "--basetemp", str(tmp_path / "inner-pytest"), "--confcutdir", str(upstream)],
+        cwd = core, env = env, capture_output = True, text = True, timeout = 60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _legs() -> dict[str, str]:
@@ -92,31 +184,11 @@ def test_the_full_suite_runs_on_the_ceiling():
     )
 
 
-def test_the_pre_312_branches_are_still_executed_somewhere():
-    """What the dropped legs actually took away, and where it went.
-
-    Seven backend files carry a sys.version_info branch. The 3.10 ones were never
-    straddled even by the old matrix, whose oldest leg was 3.10, so every leg took the
-    same side of them. 3.14 is above every leg there has ever been. The pre-3.12 side is
-    the only thing a 3.13-only matrix stops executing, so it keeps a leg of its own,
-    running those files and nothing else.
-    """
+def test_only_the_supported_runtime_is_executed():
+    """Older minors are no longer supported, even for a floor spot-check."""
     legs = _legs()
-    spot = legs.get("floor-spot-check")
-    assert spot, (
-        "the floor spot-check leg is gone. With it, nothing anywhere takes the pre-3.12 "
-        "side of native_path_leases.py, third_party_source.py or the folder-permission "
-        "check, on a pull request or on main."
-    )
-    assert _version(spot) < (3, 12), (
-        f"the spot-check leg runs {spot}, which takes the >= 3.12 side, so it re-tests "
-        f"what the full leg already covers and the older side is executed nowhere."
-    )
-    assert _version(spot) >= _declared_floor(), (
-        f"the spot-check leg runs {spot}, below the declared floor. It should be the "
-        f"NEWEST version that still takes the old side, so a failure is about the "
-        f"boundary rather than about being old."
-    )
+    assert legs == {"full": "3.14.7"}
+    assert _declared_floor() == (3, 14, 7)
 
 
 def _floor_lint() -> Path:

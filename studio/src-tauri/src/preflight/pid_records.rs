@@ -16,7 +16,7 @@ use std::path::Path;
 /// reuses pids. So each recorded pid is checked against the process actually
 /// wearing it, by start time and by what it is running.
 pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
-    let root = record_root();
+    let root = record_root()?;
     let interpreters = crate::process_identity::interpreters_of(&root);
     let probe = Probe {
         is_live: &|pid| {
@@ -35,14 +35,14 @@ pub(super) static TEST_RECORD_ROOT: std::sync::Mutex<Option<std::path::PathBuf>>
 
 /// Where the server writes its records. Overridable in tests so the end to end
 /// case can be driven without touching the real studio home.
-fn record_root() -> std::path::PathBuf {
+fn record_root() -> Option<std::path::PathBuf> {
     #[cfg(test)]
     if let Ok(guard) = TEST_RECORD_ROOT.lock() {
         if let Some(root) = guard.clone() {
-            return root;
+            return Some(root);
         }
     }
-    crate::diagnostics::studio_dir()
+    crate::studio_paths::selected_root().ok()
 }
 
 /// What the OS is asked about a recorded pid, injected so the decision below
@@ -233,6 +233,17 @@ mod tests {
 
     fn ours(_pid: u32) -> ProcessOrigin {
         ProcessOrigin::InsideTree
+    }
+
+    #[test]
+    fn explicit_environment_pid_records_follow_the_selected_data_root() {
+        crate::studio_paths::with_explicit_test_environment(|_, data| {
+            assert_eq!(record_root().as_deref(), Some(data));
+            std::fs::write(data.join(RECORDED_8888), "").unwrap();
+            assert_eq!(live_backend_pid_in(&record_root().unwrap(), 8888, &probe(&ours)), Some(RECORDED));
+            std::env::set_var("UNSLOTH_ENV_DIR", "relative");
+            assert!(record_root().is_none());
+        });
     }
 
     fn shared(_pid: u32) -> ProcessOrigin {

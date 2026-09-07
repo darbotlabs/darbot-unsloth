@@ -68,8 +68,10 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
         int(fallback_budget.group(1).replace("_", "")) == validators._OXC_TIMEOUT_S * 1000
     ), "the fallback budget must match the wait this process actually gives the wrapper"
 
-    options = re.search(r"spawnSync\(oxlintBin, oxlintArgs, \{(.*?)\}\)", source, re.S)
-    assert options, "oxlint must still be launched through spawnSync(oxlintBin, oxlintArgs, ...)"
+    options = re.search(r"spawnSync\(process\.execPath, oxlintArgs, \{(.*?)\}\)", source, re.S)
+    assert options, "oxlint's JS entrypoint must be launched with the current Node executable"
+    assert re.search(r"const oxlintArgs = \[\s*oxlintBin,", source)
+    assert '"node_modules", "oxlint", "bin", "oxlint"' in source
     assert "timeout: timeoutMs" in options.group(
         1
     ), "oxlint's bound must be the computed remainder, not a constant"

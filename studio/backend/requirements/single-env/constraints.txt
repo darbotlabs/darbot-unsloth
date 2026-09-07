@@ -1,42 +1,66 @@
-# Single-env pins for unsloth + studio + data-designer
-# MiniMax-H3's merged Diffusers workflow needs the current Hugging Face stack.
-transformers==5.5.0; python_version >= "3.10"
-transformers==4.57.6; python_version < "3.10"
-trl==0.23.1
-huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
-huggingface-hub==0.36.2; python_version < "3.10"
+# Latest compatible standard CPython 3.14.7 single-env stack, verified against
+# published PyPI metadata on 2026-09-06. Do not relax installed METADATA.
+transformers==5.16.1
+trl==1.12.0
+peft==0.20.0
+accelerate==1.14.0
+huggingface-hub==1.30.0
+tokenizers==0.23.2
+sentence-transformers==6.0.1
+datasets==5.0.1
+dill==0.4.1
+multiprocess==0.70.19
+scikit-learn==1.9.0
+pydantic==2.13.5
+# Pydantic requires this exact core, not the independently newer core release.
+pydantic-core==2.46.5
+# Stable upstream audiotools 0.7.4 (GitHub, newer than PyPI's 0.7.2) permits
+# protobuf>=3.19.6,!=4.24.0,<5. TensorBoard 2.21 requires >=6.31.1, so retain
+# its latest compatible 2.20.0 with the latest protobuf 4 release. ONNXRuntime
+# 1.29 requires >=4.25.8. These are genuine, jointly satisfiable requirements.
+# The native abi3 wheel raises "Metaclasses with custom tp_new are not supported"
+# on CPython 3.14. Its implementation selector probes the extension even when
+# PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python, so use the official pure wheel.
+protobuf @ https://files.pythonhosted.org/packages/16/28/d5065b212685875d3924bcdb3201cbf467cb4d58a18aa19a8dfd99ea80a9/protobuf-4.25.9-py3-none-any.whl#sha256=d49b615e7c935194ac161f0965699ac84df6112c378e05ec53da65d2e4cbb6d4
+tensorboard==2.20.0
 
-# Unsloth stack
-datasets==4.3.0
-pyarrow==23.0.1
-
-# FastMCP compat
-fastmcp>=3.0.2
-mcp>=1.24,<2
-websockets>=15.0.1
-
-# Cap anyio <4.14: 4.14's new asyncio per-task cancel scope (TaskHandle/_run_coro)
-# gets exited in the wrong task on Python 3.13 under starlette's collapsing task
-# group, raising "RuntimeError: ... exit a cancel scope that isn't the current
-# task's" on streaming responses (#6483); 4.13 has no such code. Global cap so
-# later with-deps steps can't re-resolve it up.
-anyio<4.14.0
-
+data-designer==0.9.2
+data-designer-config==0.9.2
+data-designer-engine==0.9.2
+# Data Designer 0.9.2 requires pandas>=2.3.3,<3 and pyarrow>=24,<25.
+# pandas 3.0.5 and pyarrow 25.0.1 are NOT compatible upgrades.
 pandas==2.3.3
+pyarrow==24.0.0
+# The engine's remaining upper bounds likewise apply to every install phase.
+chardet==5.2.0
+faker==20.1.0
+fsspec==2025.12.0
+rich==14.3.4
+python-json-logger==3.3.0
+# SQLFluff 4.3 requires Click<8.5.
+click==8.4.2
+cryptography==49.0.0; sys_platform != "darwin" or platform_machine != "x86_64"
+cryptography==48.0.1; sys_platform == "darwin" and platform_machine == "x86_64"
+# DD requires OTel 1.43.x and its lockstep exporter. Upstream publishes the
+# semantic conventions / Prometheus exporter ONLY as beta-versioned releases.
+opentelemetry-api==1.43.0
+opentelemetry-sdk==1.43.0
+opentelemetry-semantic-conventions==0.64b0
+opentelemetry-exporter-prometheus==0.64b0
+# FastMCP 4 requires MCP>=2; DD 0.9.2 requires MCP<2. Retain the latest
+# compatible FastMCP 3 release until DD can migrate with it, without overrides.
+fastmcp==3.4.7
+fastmcp-slim==3.4.7
+mcp==1.29.1
+websockets==17.1
+# Keep the streaming cancellation guard (#6483) until an upstream fix is
+# reproduced. Merely changing Python versions does not prove it is fixed.
+anyio==4.13.0
 
-# av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13 none
-# are installable and the resolver falls back to a source build, which needs FFmpeg
-# headers the Xcode CLT do not supply and so fails however that Mac is equipped.
-# 15.1.0 is the newest release with a macosx_13_0 arm64 wheel; 17+ moves to cp311-abi3
-# at macosx_14_0 too.
-#
-# The remaining sdist-only macOS defaults are pure Python, hence allowlisted in
-# .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
-# other package that would compile.
-av<16
-
-# cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
-# x86_64 macOS has no wheel and builds the sdist, needing Rust plus a working
-# linker. 48.0.1 is the newest release with a universal2 wheel. Lift when
-# cryptography ships an x86_64-capable macOS wheel again.
-cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"
+# PyAV 16+ requires macOS 14; 15.1 has macOS 13 wheels. PEP 508 cannot
+# express the macOS deployment target, so all supported Macs use that release.
+av==18.1.0; sys_platform != "darwin"
+av==15.1.0; sys_platform == "darwin"
+# pymupdf4llm 1.28 needs layout/onnxruntime; its cp314 Mac wheels require 14.
+pymupdf4llm==1.28.2; sys_platform != "darwin"
+pymupdf4llm==0.3.4; sys_platform == "darwin"

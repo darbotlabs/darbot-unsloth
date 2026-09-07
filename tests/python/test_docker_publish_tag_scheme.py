@@ -143,7 +143,10 @@ def test_cleanup_runs_after_everything_except_an_overridden_dispatch(cleanup_job
     """A default-input dispatch on the default branch publishes the stable tags, so its handles are not its only names and must go like a push's."""
     assert set(cleanup_job["needs"]) == {"merge", "merge-studio", "hub-readme", "smoke-test"}
     cond = cleanup_job["if"]
-    assert cond.startswith("${{ always() && (github.event_name != 'workflow_dispatch' || (")
+    assert cond.startswith("${{ always() && ")
+    assert "vars.UNSLOTH_DOCKER_PUBLISH == 'true'" in cond
+    assert "vars.UNSLOTH_DOCKER_IMAGE != ''" in cond
+    assert "(github.event_name != 'workflow_dispatch' || (" in cond
     gate = doc["jobs"]["hub-readme"]["if"].strip().removeprefix("${{").removesuffix("}}").strip()
     assert gate in cond, "the dispatch exception must be the stable-tag gate itself"
 

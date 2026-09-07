@@ -816,35 +816,25 @@ function Get-CudaFamilyCappedForPreTuring {
     return $Family
 }
 
-# Detect driver's max CUDA version from nvidia-smi and return the highest
-# compatible PyTorch CUDA index tag (e.g. "cu128").
-# PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
-# https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
-# capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
+# Use the maintained CUDA 13 profile, never an older CUDA family as a fallback.
 function Get-PytorchCudaTag {
     $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return "cu126" }
+    if (-not $smiExe) { return "cu130" }
 
+    $driverMajor = $null
     try {
         $output = Invoke-NvidiaSmiBounded $smiExe
         if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13)                        { $family = "cu130" }
-            elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-            elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-            elseif ($major -ge 12) { $family = "cu124" }
-            elseif ($major -ge 11) { $family = "cu118" }
-            else { return "cpu" }
-            return (Get-CudaFamilyCappedForPreTuring $family $smiExe)
+            $driverMajor = [int]$Matches[1]
         }
     } catch { }
-
-    return "cu126"
+    if ($null -ne $driverMajor -and $driverMajor -lt 13) {
+        throw "The maintained Torch 2.14 CUDA profile requires a CUDA 13-capable NVIDIA driver. Upgrade the driver, or explicitly select UNSLOTH_TORCH_INDEX_FAMILY=cpu."
+    }
+    return "cu130"
 }
 
 function Trim-IndexPathSlashes {
@@ -857,13 +847,22 @@ function Trim-IndexPathSlashes {
     return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
 }
 
+function Assert-MaintainedTorchIndex {
+    param([string]$Url)
+    $leaf = (($Url -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+    if ($leaf -match '^(cu\d+|rocm\d+\.\d+|gfx[0-9a-f]+)$' -and $leaf -notin @('cu130', 'rocm7.2')) {
+        throw "Unsupported Torch 2.14 index family '$leaf'; maintained profiles are cu130, cpu, xpu, and rocm7.2. Explicit pins are never silently aliased."
+    }
+    return $Url
+}
+
 function Get-PinnedTorchIndexUrl {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
-        return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
+        return (Assert-MaintainedTorchIndex (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL))
     }
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
         $base = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
-        return "$base/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+        return (Assert-MaintainedTorchIndex "$base/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))")
     }
     return $null
 }
@@ -1114,6 +1113,11 @@ function Get-IntelRegistryAdapterNames {
 # resolved ~1100 lines below, far past the hardware report, so the Intel scan needs its own
 # read-only guess. Returns $null when there is nothing to look at; never creates or validates.
 function Get-ProbableStudioVenvDir {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_ENV_DIR)) {
+        $explicit = [System.IO.Path]::GetFullPath($env:UNSLOTH_ENV_DIR.Trim())
+        if (Test-Path -LiteralPath $explicit -PathType Container) { return $explicit }
+        return $null
+    }
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
             else { $null }
@@ -1205,7 +1209,7 @@ function Test-VenvTorchIsXpuSupported {
         $label = $Matches[1].ToLowerInvariant()
         if ($label -notmatch '\+xpu') { return $false }
         if ($label -notmatch '^(\d+)\.(\d+)\b') { return $false }
-        return ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -ge 6 -and [int]$Matches[2] -lt 11)
+        return ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -eq 14)
     } catch { return $false }
 }
 
@@ -1877,6 +1881,13 @@ if ($_studioOverride) {
 $StageRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROOT)) { $env:UNSLOTH_STUDIO_STAGE_ROOT.Trim() } else { $null }
 $RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }
 $VenvDir = Join-Path $RuntimeRoot "unsloth_studio"
+if (-not $StageRoot -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_ENV_DIR)) {
+    if ($env:UNSLOTH_ENV_DIR.Trim() -notmatch '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') {
+        Exit-SetupFailure "UNSLOTH_ENV_DIR must be an absolute virtual environment path, including its drive or UNC share."
+    }
+    $VenvDir = [System.IO.Path]::GetFullPath($env:UNSLOTH_ENV_DIR.Trim())
+    $env:UNSLOTH_ENV_DIR = $VenvDir
+}
 $StudioOwnedMarker = ".unsloth-studio-owned"
 # Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
 $NoTorchMarker = ".unsloth-no-torch"
@@ -2702,19 +2713,18 @@ if ($LongPathsEnabled) {
 }
 
 # ============================================
-# 1b. Git (only required for --local / source installs)
+# 1b. Git (only required for llama.cpp source builds)
 # ============================================
-# Was fatal as "required by pip and npm", but the consumer path uses neither: the
-# unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL only, node is a pinned prebuilt, and the
-# frontend lockfile has no VCS deps. Being fatal blocked clean no-winget Windows boxes.
+# Core and Zoo use the maintained local checkout, Node is a pinned prebuilt, and
+# the frontend lockfile has no VCS deps. Only an actual llama.cpp clone needs Git.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
-    # Fatal only where git is used: --local and the opt-in llama.cpp source build. A local
+    # Fatal only where git is used: the opt-in llama.cpp source build. A local
     # llama.cpp dir overrides those opt-ins, but only once it holds a reusable binary:
     # pointing at the canonical install location with nothing built there falls through to
     # the normal install, so an explicit source build still needs git. The automatic
     # fallback after a failed prebuilt download is not knowable here; Phase 4 handles it.
-    $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
+    $gitNeeded = $false
     $_localLlamaDir = if ($env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR.Trim() } else { "" }
     $_localLlamaBuilt = $false
     if ($_localLlamaDir) {
@@ -2759,14 +2769,14 @@ if (-not $HasGit) {
     }
     if (-not $HasGit) {
         if ($gitNeeded) {
-            Write-StudioLine "[ERROR] Git is required for --local and llama.cpp source-build installs but could not be installed." -ForegroundColor Red
-            Write-StudioLine "        --local clones unsloth-zoo, and a source build clones llama.cpp." -ForegroundColor Red
+            Write-StudioLine "[ERROR] Git is required for llama.cpp source builds but could not be installed." -ForegroundColor Red
+            Write-StudioLine "        A source build clones llama.cpp; the local Core/Zoo checkout needs no Git." -ForegroundColor Red
             Write-StudioLine "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
-            Exit-SetupFailure "Git is required for --local / source-build installs but could not be installed"
+            Exit-SetupFailure "Git is required for llama.cpp source builds but could not be installed"
         }
         step "git" "not found (not required)" "Yellow"
         substep "Unsloth installs prebuilt binaries and wheels, so git is not needed."
-        substep "Install it only for --local/source installs: https://git-scm.com/download/win"
+        substep "Install it for llama.cpp source builds: https://git-scm.com/download/win"
     } else {
         step "git" "$(git --version)"
     }
@@ -3094,14 +3104,14 @@ function Get-NodeDecision {
     )
     $node = ($NodeVersion -replace '^v', '').Trim()
     $npm = "$NpmVersion".Trim()
-    if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
+    if ($node -match '^\d+\.\d+\.\d+$' -and $npm -match '^\d+\.\d+\.\d+$') {
         $nodeMajor = [int]($node.Split('.')[0])
         $nodeMinor = [int]($node.Split('.')[1])
         $npmMajor = [int]($npm.Split('.')[0])
-        $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
-                  ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
-                  ($nodeMajor -ge 23)
-        if ($nodeOk -and $npmMajor -ge 11) { return "system" }
+        $npmMinor = [int]($npm.Split('.')[1])
+        $nodeOk = ($nodeMajor -eq 22 -and $nodeMinor -ge 13) -or ($nodeMajor -ge 24)
+        $npmOk = ($npmMajor -gt 11) -or ($npmMajor -eq 11 -and $npmMinor -ge 10)
+        if ($nodeOk -and $npmOk) { return "system" }
     }
     if ($SkipInstall -eq "1") { return "skip" }
     return "bundled"
@@ -3200,8 +3210,14 @@ function Test-IsConda {
     return $false
 }
 
-# 1g. Python (>= 3.11, < 3.14). Prefer the validated venv python over a stub-led PATH probe.
+# Standard-GIL CPython >=3.14.7,<3.15. Validate the venv before probing PATH.
 function Resolve-ReusedSetupPython {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_STAGE_ROOT)) {
+        return Join-Path $env:UNSLOTH_STUDIO_STAGE_ROOT.Trim() "unsloth_studio\Scripts\python.exe"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_ENV_DIR)) {
+        return Join-Path ([System.IO.Path]::GetFullPath($env:UNSLOTH_ENV_DIR.Trim())) "Scripts\python.exe"
+    }
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_SETUP_PYTHON) -and
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
@@ -3228,9 +3244,9 @@ $DetectedPyVer = $null
 function Get-CompatiblePythonVersion {
     param([string]$PythonExe)
     try {
-        $out = & $PythonExe --version 2>&1 | Out-String
-        if ($out -match 'Python (3\.(11|12|13)(\.\d+)?)') {
-            return $Matches[1]
+        $out = (& $PythonExe -I -S -c "import sys,sysconfig; print('.'.join(map(str,sys.version_info[:3])) if sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED') else '')" 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $out -match '^3\.14\.\d+$') {
+            return $out
         }
     } catch { }
     return $null
@@ -3252,6 +3268,10 @@ function Add-PythonDirToProcessPath {
 
 # Reuse the install.ps1 / venv interpreter before any system probe.
 $ValidatedSetupPython = $null
+$_targetPython = Join-Path $VenvDir "Scripts\python.exe"
+if ((Test-Path -LiteralPath $_targetPython) -and -not (Get-CompatiblePythonVersion $_targetPython)) {
+    Exit-SetupFailure "The environment at $VenvDir requires a clean rebuild with standard-GIL CPython >=3.14.7,<3.15 (not 3.14t). Run the fork's install.ps1 with UNSLOTH_ENV_DIR; updating packages cannot replace cp313 native extensions."
+}
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
@@ -3267,7 +3287,7 @@ $PyLaunchers = if ($PythonOk) { @() } else { @(Get-Command py -All -CommandType 
 
 foreach ($PyLauncher in $PyLaunchers) {
     if ($PyLauncher.Source -match $CondaSkipPattern) { continue }
-    foreach ($minor in @("3.13", "3.12", "3.11")) {
+    foreach ($minor in @("3.14")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
             if ($out -match 'Python (3\.\d+\.\d+)') {
@@ -3275,12 +3295,13 @@ foreach ($PyLauncher in $PyLaunchers) {
                 # Make `python` resolvable: a py-launcher-only install would crash on bare `python`.
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and (Get-CompatiblePythonVersion $resolvedExe)) {
                         Add-PythonDirToProcessPath $resolvedExe
+                        $PythonOk = $true
+                        $ValidatedSetupPython = $resolvedExe
                     }
                 } catch { }
-                $PythonOk = $true
-                break
+                if ($PythonOk) { break }
             }
         } catch { }
     }
@@ -3288,12 +3309,21 @@ foreach ($PyLauncher in $PyLaunchers) {
 }
 
 if (-not $PythonOk -and $HasPython) {
-    $PyVer = python --version 2>&1
-    if ($PyVer -match "(\d+)\.(\d+)") {
-        $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
-        if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            $DetectedPyVer = "$PyMajor.$PyMinor"
+    $DetectedPyVer = Get-CompatiblePythonVersion "python"
+    if ($DetectedPyVer) {
+        $PythonOk = $true
+        $ValidatedSetupPython = (Get-Command python -CommandType Application).Source
+    }
+}
+
+if (-not $PythonOk) {
+    foreach ($_candidate in @($env:UNSLOTH_PYTHON_EXE, "C:\Python314\python.exe")) {
+        if ($_candidate -and (Get-CompatiblePythonVersion $_candidate) -and -not (Test-IsConda $_candidate)) {
+            $ValidatedSetupPython = $_candidate
+            $DetectedPyVer = Get-CompatiblePythonVersion $_candidate
+            Add-PythonDirToProcessPath $_candidate
             $PythonOk = $true
+            break
         }
     }
 }
@@ -3301,20 +3331,17 @@ if (-not $PythonOk -and $HasPython) {
 if ($PythonOk) {
     substep "Python $DetectedPyVer"
 } elseif (-not $HasPython) {
-    # No `python` on PATH (and py.exe either absent or only had unsupported
-    # minors). Try winget as before -- gating on $HasPython alone, not also
-    # on $PyLauncher, so a launcher-only install with just 3.14 still gets
-    # an automatic 3.12 install instead of a hard error.
-    Write-StudioLine "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+    # A launcher without a compatible interpreter may bootstrap 3.14 only.
+    Write-StudioLine "CPython >=3.14.7,<3.15 not found -- installing Python 3.14 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+        winget install -e --id Python.Python.3.14 --source winget --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     }
     $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-    if (-not $HasPython) {
+    if (-not $HasPython -or -not (Get-CompatiblePythonVersion "python")) {
         Write-StudioLine "[ERROR] Python could not be installed automatically." -ForegroundColor Red
-        Write-StudioLine "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+        Write-StudioLine "        Install standard-GIL CPython >=3.14.7,<3.15 from https://python.org/downloads/" -ForegroundColor Yellow
         Exit-SetupFailure "Python could not be installed automatically"
     }
     step "python" "$(python --version 2>&1)"
@@ -3322,10 +3349,7 @@ if ($PythonOk) {
 } else {
     # python.exe is on PATH but its version is unsupported, and py.exe (if
     # present) had no supported minor either.
-    Write-StudioLine "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
-    Write-StudioLine "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
-    Write-StudioLine "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-    Exit-SetupFailure "No supported Python 3.11-3.13 was found"
+    Exit-SetupFailure "No standard-GIL CPython >=3.14.7,<3.15 was found. Older Python and free-threaded 3.14t are unsupported."
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
@@ -3398,7 +3422,7 @@ if ($NeedNodeForSetup) {
             step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
         }
         $NeedFrontendBuild = $false
-        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
+        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Unsloth needs Node ^22.13.0 or >=24.0.0 and npm >=11.10.0" "Yellow"
         substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
     } elseif ($NodeSource -eq "bundled") {
         New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
@@ -3596,7 +3620,7 @@ if ($ReusedSetupPython) {
         $out = & $ReusedSetupPython --version 2>&1 | Out-String
         if ($out -match 'Python 3\.(\d+)') {
             $pyMinor = [int]$Matches[1]
-            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+            if ((Get-CompatiblePythonVersion $ReusedSetupPython) -and -not (Test-IsConda $ReusedSetupPython)) {
                 $PythonCmd = $ReusedSetupPython
             }
         }
@@ -3606,15 +3630,15 @@ if ($ReusedSetupPython) {
 $PyLaunchersResolve = if ($PythonCmd) { @() } else { @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue) }
 foreach ($pyLauncher in $PyLaunchersResolve) {
     if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
-    foreach ($minor in @("3.13", "3.12", "3.11")) {
+    foreach ($minor in @("3.14")) {
         try {
             $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
             if ($out -match 'Python 3\.(\d+)') {
                 $pyMinor = [int]$Matches[1]
-                if ($pyMinor -ge 11 -and $pyMinor -le 13) {
+                if ($pyMinor -eq 14) {
                     # Resolve the actual executable so venv creation does not re-resolve to conda.
                     $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and (Get-CompatiblePythonVersion $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
                         $PythonCmd = $resolvedExe
                         break
                     }
@@ -3626,7 +3650,7 @@ foreach ($pyLauncher in $PyLaunchersResolve) {
 }
 
 if (-not $PythonCmd) {
-    foreach ($candidate in @("python3.13", "python3.12", "python3.11", "python3", "python")) {
+    foreach ($candidate in @("python3.14", "python3", "python")) {
         foreach ($cmdInfo in @(Get-Command $candidate -All -ErrorAction SilentlyContinue)) {
             try {
                 if (-not $cmdInfo.Source) { continue }
@@ -3638,7 +3662,7 @@ if (-not $PythonCmd) {
                 $ver = & $cmdInfo.Source --version 2>&1
                 if ($ver -match 'Python 3\.(\d+)') {
                     $minor = [int]$Matches[1]
-                    if ($minor -ge 11 -and $minor -le 13) {
+                    if (Get-CompatiblePythonVersion $cmdInfo.Source) {
                         $PythonCmd = $cmdInfo.Source
                         break
                     }
@@ -3650,10 +3674,10 @@ if (-not $PythonCmd) {
 }
 
 if (-not $PythonCmd) {
-    Write-StudioLine "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
+    Write-StudioLine "[ERROR] No standalone standard-GIL CPython >=3.14.7,<3.15 found." -ForegroundColor Red
     Write-StudioLine "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
-    Write-StudioLine "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
-    Exit-SetupFailure "No standalone Python 3.11-3.13 was found"
+    Write-StudioLine "        winget install -e --id Python.Python.3.14" -ForegroundColor Yellow
+    Exit-SetupFailure "No standard-GIL CPython >=3.14.7,<3.15 was found (3.14t is unsupported)"
 }
 
 substep "Python found: $PythonCmd"
@@ -4091,7 +4115,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
         -not $_pinnedIdx -and -not $HasNvidiaSmi -and $expectedTorchTag -eq "cpu") {
         substep "nvidia-smi did not answer, but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
-        substep "If training runs on CPU, re-run install.ps1: irm https://unsloth.ai/install.ps1 | iex" "Yellow"
+        substep "If training runs on CPU, re-run install.ps1: irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" "Yellow"
         $shouldRebuild = $false
         # Keeping the wheel is half the job: the index selection below rescans, sees no
         # NVIDIA either, and would route the install to the /cpu arm.
@@ -4100,6 +4124,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
 
     if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_ENV_DIR)) {
+            Exit-SetupFailure "The explicit environment at $VenvDir needs rebuilding ($reason). Run the fork's install.ps1 --env-dir to preserve a rollback copy; setup will not delete this environment or its user files."
+        }
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
         # -PathType Leaf rejects a directory masquerading as the sentinel.
@@ -4130,7 +4157,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
 if (-not (Test-Path -LiteralPath $VenvDir)) {
     Write-StudioLine "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-StudioLine "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
-    Write-StudioLine "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    Write-StudioLine "        irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Yellow
     Exit-SetupFailure "Virtual environment not found at $VenvDir"
 } else {
     substep "reusing existing virtual environment at $VenvDir"
@@ -4147,7 +4174,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
         if (-not (Test-Path -LiteralPath $_venvActivate)) {
             Write-StudioLine "[ERROR] $VenvDir has no activation script at Scripts\Activate.ps1." -ForegroundColor Red
             Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
-            Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Write-StudioLine "        to rebuild it: irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Yellow
             Exit-SetupFailure "No activation script at $_venvActivate"
         }
         try {
@@ -4168,7 +4195,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
         # this state -- install.ps1 still holds the rollback copy of the previous one.
         Write-StudioLine "[ERROR] $VenvDir has no interpreter at Scripts\python.exe." -ForegroundColor Red
         Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
-        Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+        Write-StudioLine "        to rebuild it: irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Yellow
         Exit-SetupFailure "No interpreter at $_venvPyExe"
     }
 }
@@ -4225,7 +4252,7 @@ function Assert-VenvActivated {
     Write-StudioLine "[ERROR] Activating $VenvDir did not take effect: python resolves to $_where." -ForegroundColor Red
     Write-StudioLine "        The activation script is present but did not put the environment on PATH," -ForegroundColor Yellow
     Write-StudioLine "        so the environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
-    Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    Write-StudioLine "        to rebuild it: irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex" -ForegroundColor Yellow
     Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
 }
 
@@ -4234,11 +4261,11 @@ function Assert-VenvActivated {
 # running remote script text in-process, which is what AMSI scores hardest. Bumping the version
 # means bumping all 3 hashes:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
-$UvPinnedVersion = "0.12.1"
+$UvPinnedVersion = "0.12.10"
 $UvPinnedAssets = @{
-    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
-    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
-    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "F65744F94072152B1F86BA2AACE4D01F1124D9A8ECB235805039E3718C36CAC2" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "EE985C51C0C9C1F82267A5D80F959B34A7FF888C109182BD3B2B35C4661BBCDE" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "CBF375FE6BF8A4E9FFB2F09C1FF4F8ED29BA96594A604749F84FA4E08C9A4586" }
 }
 
 # Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
@@ -4566,10 +4593,11 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 import sys
 sys.path.insert(0, sys.argv[2])
 import install_manifest
-version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+companions = () if sys.argv[3] == 'true' or sys.argv[1] != 'unsloth' else ('unsloth-zoo',)
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], companions)
 print(version)
 sys.exit(2 if conflict else (0 if version else 1))
-" $_PkgName $PSScriptRoot 2>$null
+" $_PkgName $PSScriptRoot $env:UNSLOTH_NO_TORCH 2>$null
         $_InstalledVersionProbeExit = $LASTEXITCODE
         ($_installedVersionOutput | Out-String).Trim()
     } catch { "" }
@@ -4761,6 +4789,24 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
     $SkipPythonDeps = $false
 }
 
+if ($SkipPythonDeps) {
+    # A moving fork branch can change Core and Zoo without changing either version.
+    & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_python_stack as stack
+    tracking = stack._core_tracking_intent(stack._core_repair_source('unsloth'))
+except Exception:
+    sys.exit(2)
+sys.exit(0 if tracking == 'main' else 1)
+" $PSScriptRoot 2>$null
+    if ($LASTEXITCODE -ne 1) {
+        substep "checking the selected fork source rather than its package version..."
+        $SkipPythonDeps = $false
+    }
+}
+
 if (-not $SkipPythonDeps) {
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
@@ -4847,25 +4893,25 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
     # the same floor and ceiling when pulling from AMD's per-arch index.
     $torchFloorMap = @{
-        "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
-        "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
-        "gfx1152" = "torch>=2.11.0,<2.12.0"
+        "gfx1201" = "torch==2.14.0"; "gfx1200" = "torch==2.14.0"
+        "gfx1151" = "torch==2.14.0"; "gfx1150" = "torch==2.14.0"
+        "gfx1152" = "torch==2.14.0"
     }
     # Companions bounded to the torch ceiling for a consistent trio (AMD publishes each alone).
     $torchvisionFloorMap = @{
-        "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
-        "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
-        "gfx1152" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1201" = "torchvision==0.29.0"; "gfx1200" = "torchvision==0.29.0"
+        "gfx1151" = "torchvision==0.29.0"; "gfx1150" = "torchvision==0.29.0"
+        "gfx1152" = "torchvision==0.29.0"
     }
     $torchaudioFloorMap = @{
-        "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
-        "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
-        "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1201" = "torchaudio==2.11.0"; "gfx1200" = "torchaudio==2.11.0"
+        "gfx1151" = "torchaudio==2.11.0"; "gfx1150" = "torchaudio==2.11.0"
+        "gfx1152" = "torchaudio==2.11.0"
     }
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-    $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
-    $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
-    $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
+    $ROCmTorchSpec  = "torch==2.14.0"
+    $ROCmVisionSpec = "torchvision==0.29.0"
+    $ROCmAudioSpec  = "torchaudio==2.11.0"
     if ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
@@ -4889,15 +4935,15 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     $_pinGfx211 = Test-RocmGfx211Leaf $_pinLeaf
     if ($_pinGfx211 -or $_pinRocm211) {
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
-        $ROCmTorchSpec  = "torch>=2.11.0,<2.12.0"
-        $ROCmVisionSpec = "torchvision>=0.26.0,<0.27.0"
-        $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
+        $ROCmTorchSpec  = "torch==2.14.0"
+        $ROCmVisionSpec = "torchvision==0.29.0"
+        $ROCmAudioSpec  = "torchaudio==2.11.0"
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
     } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
-        $ROCmTorchSpec  = "torch"
-        $ROCmVisionSpec = "torchvision"
-        $ROCmAudioSpec  = "torchaudio"
+        $ROCmTorchSpec  = "torch==2.14.0"
+        $ROCmVisionSpec = "torchvision==0.29.0"
+        $ROCmAudioSpec  = "torchaudio==2.11.0"
     }
 }
 
@@ -4928,15 +4974,15 @@ if ($ROCmIndexUrl) {
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
-    # Release preservation: keep UNSLOTH_KEPT_TORCH unless it conflicts with a >=2.11 floor.
+    # Only the maintained release may survive the installer's version handoff.
     $_rocmKeptActive = $false
     $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
     if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
-        if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
+        if ($env:UNSLOTH_KEPT_TORCH -eq '2.14.0') {
             $ROCmTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
-            $ROCmVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-            $ROCmAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+            $ROCmVisionSpec = "torchvision==0.29.0"
+            $ROCmAudioSpec  = "torchaudio==2.11.0"
             $_rocmKeptActive = $true
         }
     }
@@ -4980,8 +5026,8 @@ if ($XpuIndexUrl) {
     # Bounded like install.ps1's XPU install: the xpu index serves torch past what Unsloth
     # supports. The floor is 2.6, not the usual 2.4 -- unsloth/models/_utils.py raises at import
     # for an XPU device below that, and an older wheel would be kept as satisfying the range.
-    $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0")
-    if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0") }
+    $_xpuTrio = @("torch==2.14.0", "torchvision==0.29.0", "torchaudio==2.11.0")
+    if ($WinArm64NoAudio) { $_xpuTrio = @("torch==2.14.0", "torchvision==0.29.0") }
     # Gated like $cpuForce below, NOT unconditional: install.ps1 already installed the XPU trio
     # before calling setup, so forcing every pass re-downloads GB there and on every update.
     # Force only on a flavor change -- a CPU (or cu*/rocm) wheel satisfies the range, so uv would
@@ -5032,26 +5078,26 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch and _ensure_cpu_torch keeps any CPU build. Unpinned keeps the bare trio.
-    $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
+    $cpuTorchSpec = "torch==2.14.0"; $cpuVisionSpec = "torchvision==0.29.0"; $cpuAudioSpec = "torchaudio==2.11.0"
     if ($TorchIndexPinned) {
-        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
-        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
-        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+        $cpuTorchSpec  = "torch==2.14.0"
+        $cpuVisionSpec = "torchvision==0.29.0"
+        $cpuAudioSpec  = "torchaudio==2.11.0"
     }
     # Bound an XPU fallback too: this is not the plain CPU box the bare trio was preserved for.
     if ($XpuCpuFallback) {
-        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
-        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
-        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+        $cpuTorchSpec  = "torch==2.14.0"
+        $cpuVisionSpec = "torchvision==0.29.0"
+        $cpuAudioSpec  = "torchaudio==2.11.0"
     }
     # Release preservation: the kept release resolves to the right cpu build off the /cpu index.
     $_cpuKeptActive = $false
     $_cpuOrigTorch = $cpuTorchSpec; $_cpuOrigVision = $cpuVisionSpec; $_cpuOrigAudio = $cpuAudioSpec
-    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+    if ($env:UNSLOTH_KEPT_TORCH -eq '2.14.0') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         $cpuTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
-        $cpuVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cpuAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+        $cpuVisionSpec = "torchvision==0.29.0"
+        $cpuAudioSpec  = "torchaudio==2.11.0"
         $_cpuKeptActive = $true
     }
     while ($true) {
@@ -5087,22 +5133,22 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound
     # the trio like the fresh custom-pin paths so a mirror can't pull an ABI-newer companion
     # against the capped torch. Known cu* leaves keep bare specs.
-    $cudaTorchSpec = "torch"
-    $cudaVisionSpec = "torchvision"
-    $cudaAudioSpec = "torchaudio"
+    $cudaTorchSpec = "torch==2.14.0"
+    $cudaVisionSpec = "torchvision==0.29.0"
+    $cudaAudioSpec = "torchaudio==2.11.0"
     if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {
-        $cudaTorchSpec = "torch>=2.4,<2.12.0"
-        $cudaVisionSpec = "torchvision>=0.19,<0.27.0"
-        $cudaAudioSpec = "torchaudio>=2.4,<2.12.0"
+        $cudaTorchSpec = "torch==2.14.0"
+        $cudaVisionSpec = "torchvision==0.29.0"
+        $cudaAudioSpec = "torchaudio==2.11.0"
     }
     # Release preservation: keep the same release across re-runs (+cuXXX follows this index).
     $_cudaKeptActive = $false
     $_cudaOrigTorch = $cudaTorchSpec; $_cudaOrigVision = $cudaVisionSpec; $_cudaOrigAudio = $cudaAudioSpec
-    if ($env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
+    if ($env:UNSLOTH_KEPT_TORCH -eq '2.14.0') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         $cudaTorchSpec = "torch==$($env:UNSLOTH_KEPT_TORCH)"
-        $cudaVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cudaAudioSpec = "torchaudio==2.$($_keptMinor).*"
+        $cudaVisionSpec = "torchvision==0.29.0"
+        $cudaAudioSpec = "torchaudio==2.11.0"
         $_cudaKeptActive = $true
     }
     while ($true) {
@@ -5132,11 +5178,11 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Triton for Windows enables torch.compile (without it training can hang).
     substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {
-        Fast-Install "triton-windows<3.7"
+        Fast-Install "triton-windows>=3.8.0,<3.9"
         $tritonInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install "triton-windows<3.7" | Out-String
+        $output = Fast-Install "triton-windows>=3.8.0,<3.9" | Out-String
         $tritonInstallExit = $LASTEXITCODE
     }
     if ($tritonInstallExit -ne 0) {
@@ -5325,7 +5371,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         # Off the network by now, so this is disk/permissions. triton-windows is
                         # already gone and took the shared paths with it, so put SOME working
                         # triton back rather than leave the venv unable to import one.
-                        Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
+                        Fast-Install --force-reinstall --no-deps "triton-windows>=3.8.0,<3.9" | Out-Null
                         $tritonBackExit = $LASTEXITCODE
                         $_tritonPresent = ($tritonBackExit -eq 0)
                         Write-StudioLine (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
@@ -5378,168 +5424,9 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
-# Runs outside the deps fast-path gate so that upgrades from the legacy
-# single .venv_t5 are always migrated to the tiered layout.
-# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
-$VenvT5_530Dir = Join-Path $RuntimeRoot ".venv_t5_530"
-$VenvT5_550Dir = Join-Path $RuntimeRoot ".venv_t5_550"
-$VenvT5_510Dir = Join-Path $RuntimeRoot ".venv_t5_510"
-$VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
-
-function Test-TargetPackageVersion {
-    param(
-        [Parameter(Mandatory = $true)][string]$TargetDir,
-        [Parameter(Mandatory = $true)][string]$PackageName,
-        [Parameter(Mandatory = $true)][string]$ExpectedVersion
-    )
-    if (-not (Test-Path -LiteralPath $TargetDir -PathType Container)) { return $false }
-    $packageNorm = $PackageName.Replace("-", "_")
-    foreach ($pattern in @("$packageNorm-*.dist-info", "$PackageName-*.dist-info")) {
-        foreach ($distInfo in @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter $pattern -ErrorAction SilentlyContinue)) {
-            $metadata = Join-Path $distInfo.FullName "METADATA"
-            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { continue }
-            foreach ($line in (Get-Content -LiteralPath $metadata -ErrorAction SilentlyContinue)) {
-                if ($line -eq "Version: $ExpectedVersion") { return $true }
-            }
-        }
-    }
-    return $false
-}
-
-$_NeedT5Install = $false
-if (Test-Path -LiteralPath $VenvT5Legacy) {
-    # Legacy layout -- migrate. The tiered venvs a staged run builds land under the
-    # stage root and may never be activated, so removing the live legacy one here
-    # would strip the running install of its only sidecar. The live update does it.
-    if (-not $StageRoot) {
-        Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
-        Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
-    }
-    $_NeedT5Install = $true
-}
-if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path -LiteralPath $VenvT5_510Dir)) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_530Dir -PackageName "transformers" -ExpectedVersion "5.3.0")) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_550Dir -PackageName "transformers" -ExpectedVersion "5.5.0")) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_510Dir -PackageName "transformers" -ExpectedVersion "5.10.2")) { $_NeedT5Install = $true }
-# Also reinstall when python deps were updated
-if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
-
-if ($_NeedT5Install) {
-Write-StudioLine ""
-
-$prevEAP_t5 = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-
-# --- .venv_t5_530 (transformers 5.3.0) ---
-substep "pre-installing transformers 5.3.0 for newer model support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_530Dir -Label "transformers 5.3 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_530Dir
-foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_530Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_530Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_530"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_530Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5_530Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_530/ -- Qwen tokenizers may fail" "Yellow"
-}
-step "transformers" "5.3.0 pre-installed"
-
-# --- .venv_t5_550 (transformers 5.5.0) ---
-substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_550Dir -Label "transformers 5.5 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_550Dir
-foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_550Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_550Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_550"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_550Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5_550Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
-}
-step "transformers" "5.5.0 pre-installed"
-
-# --- .venv_t5_510 (transformers 5.10.2) ---
-substep "pre-installing transformers 5.10.2 for Gemma 4 Unified support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_510Dir -Label "transformers 5.10 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_510Dir) { Remove-Item -LiteralPath $VenvT5_510Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_510Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_510Dir
-foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_510Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_510Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_510"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_510Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
-} else {
-    $output = Fast-Install --target $VenvT5_510Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
-}
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_510/ -- Qwen tokenizers may fail" "Yellow"
-}
-$ErrorActionPreference = $prevEAP_t5
-step "transformers" "5.10.2 pre-installed"
-
-} # end $_NeedT5Install
+# Transformers 5.16.1 comes from the shared base requirements. Runtime helpers
+# use that installation instead of shadowing it with legacy 5.3/5.5/5.10 trees.
+# Existing sidecar directories are retained rather than deleting user files.
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build

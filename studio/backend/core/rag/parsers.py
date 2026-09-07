@@ -110,7 +110,9 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     except Exception:
         return None
     try:
-        kwargs = {"page_chunks": True, "show_progress": False}
+        # The 1.28 layout engine enables OCR by default. Studio owns OCR
+        # separately; do not invoke Tesseract implicitly during Markdown parsing.
+        kwargs = {"page_chunks": True, "show_progress": False, "use_ocr": False}
         if pages is not None:
             kwargs["pages"] = list(pages)
         chunks = pymupdf4llm.to_markdown(doc, **kwargs)

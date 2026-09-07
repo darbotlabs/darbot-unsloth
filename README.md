@@ -23,7 +23,80 @@ Unsloth is the first desktop app to run and train models.
 </p>
 
 ## ⚡ Get started
-Download the native Unsloth Desktop app for your operating system:
+
+### This fork's platform policy
+
+This is **[darbotlabs/darbot-unsloth](https://github.com/darbotlabs/darbot-unsloth)**,
+not an upstream release. Use a checkout and **`--local`** to install this code.
+Upstream desktop downloads, Docker images and hosted notebooks below do **not**
+contain this fork's changes; no fork release artifacts are assumed published.
+Windows non-local installation downloads a commit-qualified GitHub source
+archive, not upstream PyPI, and does not require Git. The remote source must
+contain this migration's helper and vendored companion. Default remote installs
+track fork `main` for updates while repairs use their recorded immutable snapshot.
+Explicit local/CI sources are not advanced to a remote ref; use `--local` for
+uncommitted changes in the current checkout.
+
+| Component | Fork target |
+| --- | --- |
+| Python | **Standard, GIL-enabled CPython >=3.14.7,<3.15**; default 3.14.7 |
+| PyTorch / NVIDIA wheels | **2.14.0 / cu130** |
+| TorchVision / TorchAudio | **0.29.0 / 2.11.0** (TorchAudio 2.14 is not published) |
+| Triton | CUDA: **3.8.0** / NVIDIA Windows **3.8.0.post28**; XPU: **triton-xpu 3.8.0**; ROCm: **triton-rocm 3.8.0** |
+| datasets / scikit-learn | **5.0.1 / 1.9.0** |
+| Transformers | **5.16.1**, with the compatible framework constraints in this checkout |
+| CI / frontend build Node | **26.8.1** (current stable) |
+
+Python 3.12/3.13, Python 3.14 before 3.14.7, 3.15, PyPy, prereleases and
+free-threaded `3.14t` builds are unsupported, including `--no-torch` installs.
+Full installs resolve the vendored Zoo companion **before** local Core; do not
+replace it with upstream Zoo or manually override incompatible dependency caps.
+GGUF-only `--no-torch` installs defer Zoo, whose dependencies require Torch, and
+resolve local `unsloth[studio]` plus the Torch-free runtime normally. Studio setup also
+resolves its Data Designer packages and plugins without training dependencies.
+This does not install an inconsistent Zoo package using `--no-deps`.
+Dedicated GGUF constraints reject accidental transitive Torch/Zoo/compiler
+dependencies without changing the supported CPU-ML or CUDA profiles.
+
+Python compatibility is not GPU/backend certification. NVIDIA CUDA 13 needs a
+compatible 580-series-or-newer driver. **Ampere / sm_80 or newer** remains the
+primary accelerated-training target, but **Turing / sm_75 is not blanket-rejected**.
+On Windows, **both physical NVIDIA T1000 GPUs (sm_75)** passed the offline
+[tiny-Llama qualification](tests/test_python314_gpu_smoke.py) using CPython
+3.14.7, Torch 2.14/cu130 and Triton-Windows 3.8.0.post28:
+
+- **FP32 manual LoRA SFT** on attention Q/K/V/O and MLP projections.
+- **Default 4-bit QLoRA** with seven genuinely packed CUDA `Linear4bit` layers;
+  forward/backward and optimizer steps changed adapter weights.
+- **FP32 and 4-bit adapter save/reload**, preserving weights and logits within
+  their precision tolerances, plus real TensorBoard write/read roundtrips.
+
+Compiled elementwise forward/backward tests also passed. These are demonstrated
+tiny-model paths, not certification of every model, precision, backend, or
+Linux/Docker image. Published upstream Turing support policy remains separate
+from this fork's measured results; native BF16 acceleration is unavailable.
+CPU/GGUF, Apple Silicon MLX, AMD/ROCm, Intel/XPU, vLLM, Flash Attention and
+compiled extensions require their own compatible wheels and runtime validation;
+this migration does not claim every upstream backend is enabled.
+All installers and Docker select `cu130` for NVIDIA. Although a `cu126` wheel
+trio exists, this fork's canonical policy does not enable it or silently switch
+to it for older drivers. Upgrade the NVIDIA driver for CUDA 13, or explicitly
+select CPU/GGUF mode.
+Other selected indexes are `cpu`, `xpu`, and Linux `rocm7.2`. Unsupported explicit
+families such as `cu128` fail rather than silently changing the requested family.
+Wheel availability alone does not qualify a GPU, driver, or training backend.
+Hugging Face FP8/FP4 compressed export through current stable LLMCompressor 0.13
+and compressed-tensors 0.18 is blocked by their Torch compatibility requirements;
+this fork does not downgrade Torch 2.14 to enable it. GGUF export and other
+quantization paths are separate capabilities, not substitutes for that qualification.
+
+Fork desktop automatic updates and production publication are disabled until
+real fork signing keys, updater configuration and release artifacts exist.
+Release workflows additionally require the repository variable
+`UNSLOTH_DESKTOP_PUBLISH=true`; setting it alone does not supply signing keys or
+enable an unconfigured updater.
+
+Upstream native application downloads (not this fork):
 <table>
   <tr>
     <td><b>Platform</b></td>
@@ -53,11 +126,15 @@ Or if you prefer to install manually:
 
 #### macOS, Linux, WSL:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | sh
+git clone https://github.com/darbotlabs/darbot-unsloth unsloth
+cd unsloth
+bash install.sh --local
 ```
 #### Windows:
 ```powershell
-irm https://unsloth.ai/install.ps1 | iex
+git clone https://github.com/darbotlabs/darbot-unsloth unsloth
+Set-Location unsloth
+.\install.ps1 --local
 ```
 #### Community:
 
@@ -66,7 +143,9 @@ irm https://unsloth.ai/install.ps1 | iex
 - [Reddit](https://reddit.com/r/unsloth)
 
 ## ⭐ Features
-Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
+Upstream features span **Windows, Linux, WSL** and **macOS**. This fork retains
+those integrations subject to the narrower [platform policy](#this-forks-platform-policy);
+their presence is not a claim that each backend passes the new stack's runtime tests.
 
 ### Run & Build with AI
 * Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
@@ -103,7 +182,7 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
 
-### Unsloth Desktop (recommended)
+### Upstream Unsloth Desktop (not a fork build)
 
 <table>
   <tr>
@@ -132,12 +211,12 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 
 #### macOS, Linux, WSL:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | sh
+bash install.sh --local
 ```
 
 #### Windows:
 ```powershell
-irm https://unsloth.ai/install.ps1 | iex
+.\install.ps1 --local
 ```
 
 #### Launch
@@ -151,15 +230,18 @@ unsloth studio --secure
 ```
 
 #### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: Docker Desktop with WSL 2). Run:
+Build matching fork images using [the Docker guide](docker/DOCKERHUB.md).
+`unsloth/unsloth` on Docker Hub is upstream, not this fork. On Linux, set up GPU
+access with `sudo -E bash docker/install_nvidia_toolkit.sh` (Windows: Docker Desktop
+with WSL 2). After building `darbot-unsloth:studio`, run:
 ```bash
 docker run -d --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
   -v "$PWD":/workspace/host \
-  unsloth/unsloth
+  darbot-unsloth:studio
 ```
-Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Use local `darbot-unsloth:core` for notebooks only. See the [fork Docker build and hardware policy](docker/DOCKERHUB.md); upstream Docker Hub images do not contain this migration.
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -192,17 +274,21 @@ To see developer, nightly and uninstallation etc. instructions, see [advanced in
 #### Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv unsloth_env --python 3.13
+uv venv unsloth_env --python 3.14.7
 source unsloth_env/bin/activate
-uv pip install unsloth --torch-backend=auto
+uv pip install "torch==2.14.0" "torchvision==0.29.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu130
+python studio/install_zoo.py --python "$(pwd)/unsloth_env/bin/python"
+uv pip install -e .
 ```
 #### Windows:
 ```powershell
-winget install -e --id Python.Python.3.13
+winget install -e --id Python.Python.3.14
 winget install --id=astral-sh.uv  -e
-uv venv unsloth_env --python 3.13
+uv venv unsloth_env --python 3.14.7
 .\unsloth_env\Scripts\activate
-uv pip install unsloth --torch-backend=auto
+uv pip install "torch==2.14.0" "torchvision==0.29.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu130
+python studio\install_zoo.py --python "$PWD\unsloth_env\Scripts\python.exe"
+uv pip install -e .
 ```
 
 #### AMD, Intel, DGX Spark, Blackwell:
@@ -263,7 +349,7 @@ The below advanced instructions are for Unsloth Studio. For Unsloth Core advance
 #### Developer / Nightly / Experimental installs: macOS, Linux, WSL:
 The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```bash
-git clone https://github.com/unslothai/unsloth
+git clone https://github.com/darbotlabs/darbot-unsloth unsloth
 cd unsloth
 ./install.sh --local
 unsloth studio -p 8888
@@ -283,7 +369,7 @@ unsloth studio -p 8888
 #### Developer / Nightly / Experimental installs: Windows PowerShell:
 The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```powershell
-git clone https://github.com/unslothai/unsloth.git
+git clone https://github.com/darbotlabs/darbot-unsloth.git unsloth
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
@@ -305,26 +391,26 @@ unsloth studio -p 8888
 
 Skip PyTorch (GGUF-only mode):
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
+UNSLOTH_NO_TORCH=1 bash install.sh --local
 ```
 ```powershell
-$env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
+$env:UNSLOTH_NO_TORCH=1; .\install.ps1 --local
 ```
 
 Skip the post-install prompt that starts Unsloth (useful for automated installs):
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
+UNSLOTH_SKIP_AUTOSTART=1 bash install.sh --local
 ```
 ```powershell
-$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
+$env:UNSLOTH_SKIP_AUTOSTART=1; .\install.ps1 --local
 ```
 
 Keep the install-time package cache under the Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
+UNSLOTH_ISOLATE_UV_CACHE=1 bash install.sh --local
 ```
 ```powershell
-$env:UNSLOTH_ISOLATE_UV_CACHE=1; irm https://unsloth.ai/install.ps1 | iex
+$env:UNSLOTH_ISOLATE_UV_CACHE=1; .\install.ps1 --local
 ```
 For a local run the flag is `--isolated-uv-cache`:
 ```bash
@@ -336,18 +422,18 @@ For a local run the flag is `--isolated-uv-cache`:
 
 Pinning the Python version:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
+UNSLOTH_PYTHON=3.14.7 bash install.sh --local
 ```
 ```powershell
-$env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex
+$env:UNSLOTH_PYTHON='3.14.7'; .\install.ps1 --local
 ```
 
 Install to a custom location with `UNSLOTH_STUDIO_HOME`:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
+UNSLOTH_STUDIO_HOME=/abs/path bash install.sh --local
 ```
 ```powershell
-$env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
+$env:UNSLOTH_STUDIO_HOME='C:\path'; .\install.ps1 --local
 ```
 
 Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY`:
@@ -365,20 +451,92 @@ Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8
 You can force the backend during installation: 
 ```bash
 export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
-curl -fsSL https://unsloth.ai/install.sh | sh
+bash install.sh --local
 ```
 ```powershell
 $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
-irm https://unsloth.ai/install.ps1 | iex
+.\install.ps1 --local
 ```
 
 #### Uninstall
 
-**MacOS, WSL, Linux:** `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh`
+**MacOS, WSL, Linux:** `bash scripts/uninstall.sh`
 
-**Windows (PowerShell):** `irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex`
+**Windows (PowerShell):** `.\scripts\uninstall.ps1`
+
+The uninstall helpers remove the managed Studio installation, not a separately
+configured `UNSLOTH_ENV_DIR`. Preserve that external environment until its data and
+rollback requirements have been reviewed; it is not implicitly deleted.
 
 For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
+
+#### Migration and rollback
+
+Do not upgrade an old environment in place with ad-hoc dependency overrides.
+Stop Studio/training processes, record `pip freeze` and the source commit, and
+back up the environment **and** Studio data before rebuilding. The Python minor
+changes the ABI; do not copy old `site-packages`, compiled kernels or DLL/SO links.
+
+`UNSLOTH_ENV_DIR` selects the dedicated Python environment independently of
+`UNSLOTH_STUDIO_HOME` (data, models and settings). Keep it set for installation
+and CLI use. Use direct updates for external environments, not desktop staging.
+
+An existing external environment must contain `pyvenv.cfg` and the
+`.unsloth-studio-owned` marker; arbitrary environments are not silently adopted.
+For a fresh install, select an empty or absent dedicated directory. A successful
+external rebuild retains its previous environment in a sibling rollback directory.
+
+```powershell
+$env:UNSLOTH_ENV_DIR='D:\darbot\unsloth-env'
+$env:UNSLOTH_PYTHON='3.14.7'
+.\install.ps1 --local
+```
+
+This rebuilds the intended **same path**, not a second live environment. Preserve
+a separately named backup first. On POSIX the override must be absolute, e.g.
+`UNSLOTH_ENV_DIR="$HOME/unsloth-env" bash install.sh --local`.
+The desktop `--tauri` lifecycle does not support an external environment path.
+
+Verify the interpreter, `python -m pip check`, `unsloth --help`, Studio health and
+the actual model/backend workload before retiring the backup. If validation fails,
+stop new processes and restore the original environment to its original path,
+matching source commit and Studio data backup. An old Python backup is a rollback
+to the old installation, **not** a supported runtime for this fork.
+
+#### Source updates and repair
+
+The environment's `.unsloth-studio-source.json` separates its immutable Core/Zoo
+repair snapshot from optional `main` tracking. Package versions alone cannot
+detect a newer commit. Legacy archive installations without recorded tracking
+remain pinned: an immutable archive does not reveal whether its original intent
+was a branch or an explicit commit. Git provenance requesting `main` or the
+implicit fork default branch can supply that intent; an explicit commit/tag or
+recorded `pinned` policy does not opt into branch tracking.
+
+For a maintained fork archive installation, opt into tracking `main` once:
+
+```bash
+UNSLOTH_CORE_TRACKING_REF=main unsloth studio update
+```
+
+PowerShell, restoring the caller's environment afterward:
+
+```powershell
+$previousTracking = $env:UNSLOTH_CORE_TRACKING_REF
+try {
+    $env:UNSLOTH_CORE_TRACKING_REF = 'main'
+    unsloth studio update
+} finally {
+    $env:UNSLOTH_CORE_TRACKING_REF = $previousTracking
+}
+```
+
+The successful managed-source update records the tracking intent. Use `pinned`
+instead to request a fixed-source operation. Explicit local/CI and editable
+checkouts stay fixed to their selected source even if `main` is inherited.
+Tracked updates resolve one immutable commit and prepare matching Core/Zoo
+payloads before replacement; repair remains tied to the retained snapshot.
+This source-update policy does not enable desktop signing or publication.
 
 #### Deleting model files
 

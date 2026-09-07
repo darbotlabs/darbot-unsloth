@@ -12,6 +12,17 @@ static TEST_EXPECTED_STUDIO_ROOT_ID: std::sync::Mutex<Option<String>> = std::syn
 static TEST_METADATA: std::sync::Mutex<Option<DesktopBackendMetadata>> =
     std::sync::Mutex::new(None);
 
+#[cfg(test)]
+pub(crate) fn use_disk_root_id_for_test() -> impl Drop {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            *TEST_EXPECTED_STUDIO_ROOT_ID.lock().unwrap() = self.0.take();
+        }
+    }
+    Restore(TEST_EXPECTED_STUDIO_ROOT_ID.lock().unwrap().take())
+}
+
 pub(crate) const OWNER_TOKEN_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN";
 pub(crate) const OWNER_KIND_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND";
 // The app's own pid, so the backend can watch the exact owner process instead
@@ -174,26 +185,20 @@ pub(crate) fn parse_studio_root_id(value: &str) -> Option<String> {
     is_valid_studio_root_id(value).then(|| value.to_string())
 }
 
-pub(crate) fn managed_studio_root_id_path(home: &Path) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
-        .join("share")
-        .join("studio_install_id")
+pub(crate) fn managed_studio_root_id_path(root: &Path) -> PathBuf {
+    root.join("share").join("studio_install_id")
 }
 
-fn managed_run_dir(home: &Path) -> PathBuf {
-    home.join(".unsloth").join("studio").join("run")
+fn managed_run_dir(root: &Path) -> PathBuf {
+    root.join("run")
 }
 
-fn metadata_path_for_home(home: &Path) -> PathBuf {
-    managed_run_dir(home).join("desktop_backend.json")
+fn metadata_path_for_root(root: &Path) -> PathBuf {
+    managed_run_dir(root).join("desktop_backend.json")
 }
 
-fn auth_secret_path_for_home(home: &Path) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
-        .join("auth")
-        .join(".desktop_secret")
+fn auth_secret_path_for_root(root: &Path) -> PathBuf {
+    root.join("auth").join(".desktop_secret")
 }
 
 pub(crate) fn read_expected_studio_root_id() -> Option<String> {
@@ -204,8 +209,8 @@ pub(crate) fn read_expected_studio_root_id() -> Option<String> {
         }
     }
 
-    let home = dirs::home_dir()?;
-    let raw = std::fs::read_to_string(managed_studio_root_id_path(&home)).ok()?;
+    let root = crate::studio_paths::selected_root().ok()?;
+    let raw = std::fs::read_to_string(managed_studio_root_id_path(&root)).ok()?;
     parse_studio_root_id(&raw)
 }
 
@@ -219,7 +224,7 @@ pub(crate) fn ensure_managed_studio_root_id() -> Result<String, String> {
         }
     }
 
-    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    let path = managed_studio_root_id_path(&crate::studio_paths::selected_root()?);
     ensure_studio_root_id_at(&path, true)?.ok_or_else(|| {
         format!(
             "could not create the desktop ownership id at {}",
@@ -230,12 +235,8 @@ pub(crate) fn ensure_managed_studio_root_id() -> Result<String, String> {
 
 /// Repairs a missing ID only when a managed install already exists.
 pub(crate) fn ensure_installed_studio_root_id() -> Result<Option<String>, String> {
-    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    let path = managed_studio_root_id_path(&crate::studio_paths::selected_root()?);
     ensure_studio_root_id_at(&path, crate::process::find_unsloth_binary().is_some())
-}
-
-fn home_dir_or_error() -> Result<PathBuf, String> {
-    dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())
 }
 
 fn ensure_studio_root_id_at(
@@ -443,7 +444,7 @@ fn publish_private_file_by_rename(tmp: &Path, path: &Path) -> Result<bool, Strin
 }
 
 fn metadata_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| metadata_path_for_home(&home))
+    crate::studio_paths::selected_root().ok().map(|root| metadata_path_for_root(&root))
 }
 
 pub(crate) fn token_sha256(token: &str) -> String {
@@ -1258,10 +1259,8 @@ pub(crate) fn port_is_listening_blocking(port: u16, timeout: Duration) -> bool {
 }
 
 fn read_desktop_secret() -> Result<Option<String>, String> {
-    let Some(home) = dirs::home_dir() else {
-        return Ok(None);
-    };
-    match std::fs::read_to_string(auth_secret_path_for_home(&home)) {
+    let root = crate::studio_paths::selected_root()?;
+    match std::fs::read_to_string(auth_secret_path_for_root(&root)) {
         Ok(secret) => Ok(Some(secret.trim().to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),

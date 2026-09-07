@@ -32,7 +32,7 @@
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
 set -euo pipefail
 
-IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
+IMAGE="${UNSLOTH_IMAGE:-darbot-unsloth:studio}"
 GPUS="${UNSLOTH_GPUS:-all}"
 # Translate index selectors to Docker's `device=` form: a bare integer is a COUNT,
 # not an INDEX, so `UNSLOTH_GPUS=0` would expose zero GPUs.

@@ -1,5 +1,23 @@
 # 🦥 Contributing to Unsloth
 
+## Fork development policy
+
+Contributions here target [darbotlabs/darbot-unsloth](https://github.com/darbotlabs/darbot-unsloth).
+Use standard CPython **>=3.14.7,<3.15** (not free-threaded). Build and test with
+Torch 2.14, Triton 3.8, datasets 5.0.1 and scikit-learn 1.9.0, following the
+[README platform policy](README.md#this-forks-platform-policy). Bootstrap
+`studio/install_zoo.py --python <absolute-target-python>` before installing local
+Core; published upstream Zoo has incompatible requirements. The Torch-free
+GGUF profile instead defers Zoo and resolves Core's `studio` extra, runtime,
+Data Designer and plugin dependencies normally.
+
+Run the existing targeted tests for changed behavior before broad suites.
+Backend CI executes one full Python 3.14.7 CPU leg; GPU tests remain hardware-specific.
+Do not update historical snapshots merely to hide incompatibilities, add unsupported
+Python matrix legs, relax constraints without fixing behavior, or infer full GPU
+training support from successful imports. No fork desktop/container release is
+assumed published; developer instructions must use local source.
+
 Thank you for not only using Unsloth but also for being interested in helping out! We value all contributions, whether they come in the form of code, ideas, support for others or just by simply spreading the word of Unsloth! 💕
 
 - **[Support the Community](https://github.com/unslothai/unsloth/issues)**: Answer questions, review pull requests, or assist others in discussions.

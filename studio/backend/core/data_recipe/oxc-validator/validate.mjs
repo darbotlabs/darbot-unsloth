@@ -398,8 +398,9 @@ function runLintBatch(entries, budgetMs) {
       writeFileSync(filePath, entry.code, "utf8");
     }
 
-    const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
+    const oxlintBin = join(TOOL_DIR, "node_modules", "oxlint", "bin", "oxlint");
     const oxlintArgs = [
+      oxlintBin,
       ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
       "--format",
       "json",
@@ -409,7 +410,7 @@ function runLintBatch(entries, budgetMs) {
     if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
       return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
     }
-    const exec = spawnSync(oxlintBin, oxlintArgs, {
+    const exec = spawnSync(process.execPath, oxlintArgs, {
       encoding: "utf8",
       cwd: TOOL_DIR,
       timeout: timeoutMs,

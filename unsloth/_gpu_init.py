@@ -148,18 +148,19 @@ del _nvd, _cgroup_pinned
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
-# Try importing PyTorch and check version
+# The published Zoo's metadata excludes this fork's coordinated stack.
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.8.15"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+    if Version(unsloth_zoo_version) != Version("2026.9.1+darbot.1"):
+        raise ImportError(
+            "Unsloth: This fork requires the maintained Zoo companion 2026.9.1+darbot.1. "
+            f'Install it with `python -m studio.install_zoo --python "{sys.executable}"`.'
         )
     import unsloth_zoo
 except PackageNotFoundError:
     raise ImportError(
-        f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
+        "Unsloth: The maintained Zoo companion is missing. "
+        f'Install it with `python -m studio.install_zoo --python "{sys.executable}"`.'
     )
 except:
     raise

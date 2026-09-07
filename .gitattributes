@@ -13,6 +13,10 @@
 # longer the ones that were reviewed. -text disables conversion in both directions.
 studio/backend/assets/docs_ui/** -text
 
+# Preserve the licensed companion's reviewed upstream bytes and provenance
+# digests, including its original whitespace, on every checkout platform.
+studio/backend/vendor/unsloth_zoo_compat/** -text -whitespace
+
 # Normalize Unsloth frontend sources to LF. Scoped to the frontend tree (rather
 # than repo-wide *.ts/*.tsx/... rules) so the policy can't force LF on files
 # elsewhere. text=auto lets Git detect and leave binary assets (logos, fonts)

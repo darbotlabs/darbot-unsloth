@@ -57,14 +57,13 @@ LIBROCDXG_SHA="${UNSLOTH_LIBROCDXG_SHA:-4955d12888a3ec57057f1cf8660c2485e415e74c
 if [ -n "${UNSLOTH_LIBROCDXG_REF:-}" ] && [ -z "${UNSLOTH_LIBROCDXG_SHA:-}" ]; then
     LIBROCDXG_SHA=""
 fi
-# AMD's wheel index for the (optional) smoke test; resolved after arch detection.
+# The verified Torch 2.14 index for the optional hardware smoke test.
 TORCH_INDEX=""
 # Optional torch smoke test (throwaway venv). OFF by default: install.sh installs
 # torch itself into the real venv right after, so a duplicate download is wasteful.
 SMOKE_TEST="${UNSLOTH_WSL_SMOKE_TEST:-0}"
-# REQUIRED constraint -- without it pip prefers PyPI's newer CUDA torch over the
-# gfx1151 ROCm wheel. 2.11 carries AMD's real gfx1151 fix (matches install.sh).
-TORCH_CONSTRAINT="${UNSLOTH_WSL_TORCH_CONSTRAINT:-torch>=2.11.0,<2.12.0}"
+# Include the flavor so a missing ROCm wheel cannot fall back to a CUDA build.
+TORCH_CONSTRAINT="torch==2.14.0+rocm7.2"
 ROCM_DIR=""                                          # resolved after install
 
 say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
@@ -300,21 +299,16 @@ GFX="${GFX:-$_detected_gfx}"
 printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3 || true
 note "ROCm-on-WSL runtime is live for ${GFX}."
 
-# ── Step 6 (optional): torch smoke test from AMD's per-arch wheel index ───────
+# ── Step 6 (optional): qualify Torch 2.14 / ROCm 7.2 on this WSL GPU ─────────
 if [ "$SMOKE_TEST" = "1" ]; then
+    python3 -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "ROCm smoke testing requires standard CPython >=3.14.7,<3.15; older Torch wheels are not supported by this fork"'
     say "Smoke-testing PyTorch on ${GFX} (throwaway venv)"
-    # Map the detected arch to AMD's repo.amd.com wheel family index.
-    case "$GFX" in
-        gfx1200|gfx1201)                 _fam="gfx120X-all" ;;
-        gfx1100|gfx1101|gfx1102|gfx1103) _fam="gfx110X-all" ;;
-        *)                               _fam="$GFX" ;;   # gfx1150/gfx1151/gfx90a: own index
-    esac
-    TORCH_INDEX="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}/${_fam}/"
+    _torch_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+    TORCH_INDEX="${_torch_base%/}/rocm7.2"
     _venv="${HOME}/.unsloth/rocm-smoketest"
     rm -rf "$_venv"; python3 -m venv "$_venv"
     "$_venv/bin/pip" install --quiet --upgrade pip
-    # AMD arch index is primary (torch + triton); PyPI only an extra for pure-py
-    # deps. The constraint keeps pip on the ROCm wheel, not a newer PyPI CUDA torch.
+    # PyPI supplies dependencies, but the explicit local version forbids CUDA.
     "$_venv/bin/pip" install --index-url "$TORCH_INDEX" \
         --extra-index-url https://pypi.org/simple "$TORCH_CONSTRAINT" || \
         die "torch install from ${TORCH_INDEX} failed."
@@ -344,4 +338,4 @@ fi
 say "Done."
 note "ROCm-on-WSL is ready for ${GFX}. If you ran this standalone, install Unsloth"
 note "in THIS distro and it will detect the GPU automatically:"
-note "  curl -fsSL https://unsloth.ai/install.sh | sh"
+note "  cd <your darbot-unsloth checkout> && bash install.sh --local"

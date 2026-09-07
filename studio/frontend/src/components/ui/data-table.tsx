@@ -2,12 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  type ColumnDef,
+  type RowData,
   type SortingState,
   flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
+  useTable,
 } from "@tanstack/react-table";
 import { useState } from "react";
 
@@ -20,9 +18,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import {
+  type DataTableColumnDef,
+  dataTableFeatures,
+} from "./data-table-model";
 
-interface DataTableProps<TData, TValue> {
-  columns: ColumnDef<TData, TValue>[];
+interface DataTableProps<TData extends RowData> {
+  columns: DataTableColumnDef<TData>[];
   data: TData[];
   className?: string;
   onRowClick?: (row: TData, rowIndex: number, rowId: string) => void;
@@ -33,21 +35,19 @@ interface DataTableProps<TData, TValue> {
   ) => string | undefined;
 }
 
-export function DataTable<TData, TValue>({
+export function DataTable<TData extends RowData>({
   columns,
   data,
   className,
   onRowClick,
   getRowClassName,
-}: DataTableProps<TData, TValue>) {
+}: DataTableProps<TData>) {
   const [sorting, setSorting] = useState<SortingState>([]);
 
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
     onSortingChange: setSorting,
     state: { sorting },
   });

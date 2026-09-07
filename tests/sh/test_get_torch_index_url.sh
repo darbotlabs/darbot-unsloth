@@ -210,22 +210,34 @@ run_func() {
     fi
 }
 
+assert_driver_rejected() {
+    _label="$1"
+    shift
+    if _result=$(run_func "$@"); then
+        echo "  FAIL: $_label (expected driver rejection, got '$_result')"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  PASS: $_label"
+        PASS=$((PASS + 1))
+    fi
+}
+
 echo "=== test_get_torch_index_url ==="
 
 # 1) No nvidia-smi available -> cpu
 _result=$(run_func "none")
 assert_eq "no nvidia-smi -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
-# 2) CUDA 12.6 -> cu126
+# 2) Older drivers cannot select another CUDA family.
 _dir=$(make_mock_smi "12.6")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.6 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_driver_rejected "CUDA 12.6 requires driver upgrade" "$_dir"
+_result=$(SKIP_TORCH=true run_func "$_dir")
+assert_eq "no-torch accepts older driver" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
-# 3) CUDA 12.8 -> cu128
+# 3) CUDA 12.8 also requires a driver upgrade.
 _dir=$(make_mock_smi "12.8")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.8 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_driver_rejected "CUDA 12.8 requires driver upgrade" "$_dir"
 rm -rf "$_dir"
 
 # 4) CUDA 13.0 -> cu130
@@ -234,25 +246,22 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 5) CUDA 12.4 -> cu124
+# 5) CUDA 12.4 cannot fall back to cu124.
 _dir=$(make_mock_smi "12.4")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.4 -> cu124" "https://download.pytorch.org/whl/cu124" "$_result"
+assert_driver_rejected "CUDA 12.4 requires driver upgrade" "$_dir"
 rm -rf "$_dir"
 
-# 6) CUDA 11.8 -> cu118
+# 6) CUDA 11.8 cannot fall back to cu118.
 _dir=$(make_mock_smi "11.8")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
+assert_driver_rejected "CUDA 11.8 requires driver upgrade" "$_dir"
 rm -rf "$_dir"
 
-# 7) CUDA 10.2 (too old) -> cpu
+# 7) CUDA 10.2 cannot silently switch to CPU.
 _dir=$(make_mock_smi "10.2")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 10.2 -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+assert_driver_rejected "CUDA 10.2 requires explicit CPU or driver upgrade" "$_dir"
 rm -rf "$_dir"
 
-# 8) Unparseable nvidia-smi version but valid GPU listing -> cu126 default
+# 8) Unknown driver capability retains the target, with an actionable warning.
 _dir=$(mktemp -d)
 cat > "$_dir/nvidia-smi" <<'MOCK'
 #!/bin/sh
@@ -263,7 +272,7 @@ esac
 MOCK
 chmod +x "$_dir/nvidia-smi"
 _result=$(run_func "$_dir")
-assert_eq "unparseable -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "unparseable -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
@@ -285,13 +294,13 @@ assert_eq "ROCm 7.2 -> rocm7.2" "https://download.pytorch.org/whl/rocm7.2" "$_re
 rm -rf "$_dir"
 
 # 12) Both nvidia-smi and amd-smi present -> CUDA takes precedence
-_cuda_dir=$(make_mock_smi "12.6")
+_cuda_dir=$(make_mock_smi "13.0")
 _amd_dir=$(make_mock_amd_smi "6.3")
 _combined_dir=$(mktemp -d)
 ln -sf "$_cuda_dir/nvidia-smi" "$_combined_dir/nvidia-smi"
 ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
 _result=$(run_func "$_combined_dir")
-assert_eq "CUDA+ROCm -> CUDA precedence" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA+ROCm -> CUDA precedence" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 
 # 13) No nvidia-smi, no amd-smi -> cpu (duplicate of test 1, confirms ROCm didn't break it)
@@ -350,10 +359,9 @@ _result=$(run_func "$_dir")
 assert_eq "ROCm 6.3.1-beta -> rocm6.3" "https://download.pytorch.org/whl/rocm6.3" "$_result"
 rm -rf "$_dir"
 
-# 22) CUDA 12.6 still works after ROCm changes (regression check)
+# 22) ROCm changes must not re-enable older NVIDIA drivers.
 _dir=$(make_mock_smi "12.6")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.6 regression -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_driver_rejected "CUDA 12.6 still rejected after ROCm changes" "$_dir"
 rm -rf "$_dir"
 
 # 23) CUDA 13.0 still works after ROCm changes (regression check)
@@ -362,16 +370,15 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 regression -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 24) CUDA 12.8 still works after ROCm changes (regression check)
+# 24) CUDA 12.8 remains rejected after ROCm changes.
 _dir=$(make_mock_smi "12.8")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.8 regression -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_driver_rejected "CUDA 12.8 still rejected after ROCm changes" "$_dir"
 rm -rf "$_dir"
 
 # 25) UNSLOTH_PYTORCH_MIRROR overrides base URL (CUDA case)
-_dir=$(make_mock_smi "12.6")
+_dir=$(make_mock_smi "13.0")
 _result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" run_func "$_dir")
-assert_eq "mirror env + CUDA 12.6 -> mirror/cu126" "https://mirror.example.com/whl/cu126" "$_result"
+assert_eq "mirror env + CUDA 13.0 -> mirror/cu130" "https://mirror.example.com/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 # 26) UNSLOTH_PYTORCH_MIRROR overrides base URL (CPU case)
@@ -393,16 +400,14 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 13.3 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# 30) "CUDA UMD Version: 12.8" header (newer layout on a 12.x driver) -> cu128
+# 30) The newer UMD header must not bypass the driver requirement.
 _dir=$(make_mock_smi_umd "12.8")
-_result=$(run_func "$_dir")
-assert_eq "CUDA UMD Version 12.8 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_driver_rejected "CUDA UMD Version 12.8 rejected" "$_dir"
 rm -rf "$_dir"
 
-# 31) "CUDA UMD Version: 11.8" header (newer layout on an older driver) -> cu118
+# 31) Older UMD versions are rejected too.
 _dir=$(make_mock_smi_umd "11.8")
-_result=$(run_func "$_dir")
-assert_eq "CUDA UMD Version 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
+assert_driver_rejected "CUDA UMD Version 11.8 rejected" "$_dir"
 rm -rf "$_dir"
 
 # 32) Driver-reported "CUDA Version: 13.3" (legacy header) -> cu130.
@@ -417,42 +422,40 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# ── Pre-Turing hosts cap at cu126 (issue #7765) ──
-# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs
-# these GPUs their llama.cpp GGUF bundle.
+# GPU architecture must not silently select a different CUDA family.
+# Selection is not a claim that these historical GPU fixtures can train.
 _dir=$(make_mock_smi "13.0" "7.0")
 _result=$(run_func "$_dir")
-assert_eq "CUDA 13.0 + Volta -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA 13.0 + Volta retains policy" "https://download.pytorch.org/whl/cu130" "$_result"
 # The mask is irrelevant: an all-pre-Turing host stays pre-Turing under any mask.
 _result=$(run_func "$_dir" "0")
-assert_eq "CUDA 13.0 + Volta + CVD=0 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA 13.0 + Volta + CVD=0 retains policy" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 _dir=$(make_mock_smi "12.8" "6.1")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.8 + Pascal -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_driver_rejected "CUDA 12.8 + Pascal requires driver upgrade" "$_dir"
 rm -rf "$_dir"
 
 _dir=$(make_mock_smi "13.0" "7.0 7.0")
 _result=$(run_func "$_dir")
-assert_eq "CUDA 13.0 + two Voltas -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA 13.0 + two Voltas retains policy" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# Turing is the floor of cu128/cu130, so it keeps the driver family.
+# Turing is not blanket-rejected.
 _dir=$(make_mock_smi "13.0" "7.5")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Turing -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# cu126 spans sm_50-90, so a mixed host is served whole while its newest card is Hopper.
+# Mixed hosts retain the same policy without claiming every GPU is usable.
 _dir=$(make_mock_smi "13.0" "7.0 8.6")
 _result=$(run_func "$_dir")
-assert_eq "CUDA 13.0 + Volta and Ampere -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA 13.0 + Volta and Ampere retains policy" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 _dir=$(make_mock_smi "13.0" "6.1 9.0")
 _result=$(run_func "$_dir")
-assert_eq "CUDA 13.0 + Pascal and Hopper -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_eq "CUDA 13.0 + Pascal and Hopper retains policy" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 # Blackwell is past cu126's ceiling and Kepler is under its floor, so no family covers
@@ -467,10 +470,9 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Kepler and Ampere -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# cu126 and older already ship the legacy kernels; nothing to cap.
+# Older drivers are not rescued by a hardware-based fallback.
 _dir=$(make_mock_smi "12.6" "7.0")
-_result=$(run_func "$_dir")
-assert_eq "CUDA 12.6 + Volta -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+assert_driver_rejected "CUDA 12.6 + Volta requires driver upgrade" "$_dir"
 rm -rf "$_dir"
 
 # An unreadable or partial inventory keeps the driver-only choice.
@@ -489,7 +491,7 @@ _result=$(run_func "$_dir")
 assert_eq "empty capability inventory -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# No aarch64 CUDA family ships sm_<80 kernels, so cu126 cannot help there.
+# Historical classifier unit coverage; the current selector never calls it.
 _dir=$(make_mock_smi "13.0" "7.0")
 _result=$(PATH="$_dir:$_TOOLS_DIR" bash -c \
     "_ARCH=aarch64; . '$_FUNC_FILE'; _cap_cuda_family_for_pre_turing cu130 nvidia-smi" 2>/dev/null)
@@ -523,8 +525,7 @@ rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
 
 # 37) CUDA_VISIBLE_DEVICES=0 (a visible device) must NOT hide the GPU
 _dir=$(make_mock_smi "12.8")
-_result=$(run_func "$_dir" "0")
-assert_eq "CVD=0 keeps NVIDIA -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_driver_rejected "CVD=0 keeps NVIDIA driver qualification" "$_dir" "0"
 rm -rf "$_dir"
 
 # 38) Whitespace-padded "-1" still hides the GPU

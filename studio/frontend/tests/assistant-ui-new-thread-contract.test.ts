@@ -21,6 +21,8 @@ const LOCAL_ID = "__LOCALID_contract0001";
 function pendingNewThread() {
   return {
     isLoading: false,
+    isLoadingMore: false,
+    cursor: undefined,
     newThreadId: LOCAL_ID,
     threadIds: [] as string[],
     archivedThreadIds: [] as string[],

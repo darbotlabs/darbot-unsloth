@@ -66,6 +66,19 @@ from utils.transformers_version import (
     hf_endpoint_unreachable,
 )
 
+if sys.modules.get("loggers") is _loggers_stub:
+    # The module under test has captured its logger; do not leak a stdlib-only
+    # factory into subsequently collected routes that use structured fields.
+    sys.modules.pop("loggers")
+
+
+@pytest.fixture(autouse = True)
+def _legacy_base_without_fixed_tiers(monkeypatch):
+    """Exercise fallback shadows independently of the runner's installed base."""
+    monkeypatch.setattr(
+        "utils.transformers_version._base_transformers_supports", lambda tier: False
+    )
+
 
 @pytest.fixture(autouse = True)
 def _no_ambient_proxy(monkeypatch):
@@ -1766,7 +1779,8 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.5.0" in text, f"version not logged: {text!r}"
+        assert "5.16.1" in text, f"supported version not logged: {text!r}"
+        assert ".venv_t5_550" in text
         # Must signal this is only a sys.path manipulation, not a confirmed import.
         assert (
             "sys.path" in text or "path only" in text
@@ -1795,7 +1809,8 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.3.0" in text, f"version not logged: {text!r}"
+        assert "5.16.1" in text, f"supported version not logged: {text!r}"
+        assert ".venv_t5_530" in text
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
@@ -1827,7 +1842,8 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
+        assert "5.16.1" in text, f"supported version not logged: {text!r}"
+        assert ".venv_t5_510" in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
         # LoRA adapter in a dir named 'gemma-4' (base resolves elsewhere): the resolved

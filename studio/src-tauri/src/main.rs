@@ -21,6 +21,7 @@ mod preflight;
 mod process;
 mod process_identity;
 mod staged_update;
+mod studio_paths;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -779,9 +780,7 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log
-    if let Some(home) = dirs::home_dir() {
-        let log_dir = home.join(".unsloth").join("studio");
+    if let Ok(log_dir) = crate::studio_paths::selected_root() {
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");

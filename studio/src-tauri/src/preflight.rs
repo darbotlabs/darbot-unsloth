@@ -695,7 +695,10 @@ mod tests {
         fs::write(&bin, script).unwrap();
         let mut perms = fs::metadata(&bin).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&bin, perms).unwrap();
+        fs::set_permissions(&bin, perms.clone()).unwrap();
+        let python = dir.join("python");
+        fs::write(&python, "#!/bin/sh\nshift 4\nexec \"$(dirname \"$0\")/unsloth\" \"$@\"\n").unwrap();
+        fs::set_permissions(&python, perms).unwrap();
         FakeCli { bin, dir }
     }
 

@@ -298,7 +298,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==2.2.4'
@@ -339,7 +339,7 @@ jobs:
   studio-gpu:
     name: Unsloth GPU smoke
     needs: gate
-    if: needs.gate.outputs.should_run == 'true'
+    if: needs.gate.outputs.should_run == 'true' && vars.UNSLOTH_KAGGLE_PYTHON314_VALIDATED == 'true'
     runs-on: ubuntu-latest
     # One element, carrying the chosen account into a context `secrets[...]`
     # can be indexed with. It holds the SECRET NAME, never the token: `secrets`
@@ -385,7 +385,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==2.2.4'

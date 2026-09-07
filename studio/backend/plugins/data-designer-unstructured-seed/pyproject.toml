@@ -2,20 +2,21 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "data-designer-unstructured-seed"
 version = "0.1.0"
 description = "Local Data Designer unstructured seed reader plugin"
-requires-python = ">=3.11"
+requires-python = ">=3.14.7,<3.15"
 dependencies = [
-  "data-designer-engine>=0.5.4,<0.6",
-  "pandas>=2,<3",
-  "pymupdf>=1.24.0",
-  "pymupdf4llm>=0.0.17",
-  "mammoth>=1.8.0",
+  "data-designer-engine==0.9.2",
+  "pandas==2.3.3",
+  "pymupdf==1.28.2",
+  "pymupdf4llm==1.28.2; sys_platform != 'darwin'",
+  "pymupdf4llm==0.3.4; sys_platform == 'darwin'",
+  "mammoth==1.12.1",
 ]
 
 [project.entry-points."data_designer.plugins"]

@@ -9,7 +9,7 @@
 # builds anything, so it stranded every non-apt distro over unused tooling.
 #
 # The contract now: only a download transport (curl or wget) is fatal, build tooling
-# is a warning, and git is required for --local only (unsloth-zoo git+https URL).
+# is a warning; local Core and maintained Zoo need no Git clone.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -140,13 +140,13 @@ assert_contains "install proceeds"                       "$_out" "RC=0"
 assert_contains "names the consequence of no git"        "$_out" "triton kernels"
 assert_not_contains "does not call it required to run"   "$_out" "is required"
 
-echo "=== --local without git: must fail loudly (matches macOS) ==="
+echo "=== --local without git uses maintained local source ==="
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _out="$(_run_gate true)"
-assert_contains "fails"                                  "$_out" "RC=1"
-assert_contains "explains why git is needed"             "$_out" "unsloth-zoo"
-assert_contains "says a normal install needs none"       "$_out" "non---local"
+assert_contains "local install proceeds"                 "$_out" "RC=0"
+assert_contains "uses the prebuilt path"                 "$_out" "using prebuilt llama.cpp"
+assert_not_contains "no Git requirement for local Zoo"  "$_out" "git is required"
 
 echo "=== --local with a git that exists but does not work ==="
 # Mirrors the macOS CLT-stub shape: `command -v git` succeeds, running it fails.
@@ -154,7 +154,7 @@ rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _mk git 'echo "broken" >&2; exit 1'
 _out="$(_run_gate true)"
-assert_contains "still fails"                            "$_out" "RC=1"
+assert_contains "local install still proceeds"           "$_out" "RC=0"
 
 echo "=== --local with a working git proceeds ==="
 rm -f "$_BIN"/*

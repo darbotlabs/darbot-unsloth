@@ -51,21 +51,28 @@ def _load_module(monkeypatch):
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
+        # Historical torch 2.11-2.13 installations retain their matching pin.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
         ("2.12.0", "torchao==0.17.0"),
-        # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
-        ("2.9.0+cu128", "torchao==0.14.0"),
-        ("2.9.1", "torchao==0.14.0"),
-        ("2.8.0", "torchao==0.14.0"),
-        ("2.4.0", "torchao==0.14.0"),
-        # Unparseable / missing / non-2.x major -> conservative default.
-        (None, "torchao==0.14.0"),
-        ("", "torchao==0.14.0"),
-        ("garbage", "torchao==0.14.0"),
-        ("2", "torchao==0.14.0"),
-        ("3.0.0", "torchao==0.14.0"),
+        ("2.13.0", "torchao==0.17.0"),
+        # The maintained torch 2.14 stack uses the platform-independent 0.18 wheel.
+        ("2.14.0+cu130", "torchao==0.18.0"),
+        ("2.14.0+cu126", "torchao==0.18.0"),
+        ("2.14.0+cpu", "torchao==0.18.0"),
+        ("2.14.0+xpu", "torchao==0.18.0"),
+        ("2.14.0+rocm7.2", "torchao==0.18.0"),
+        ("2.14.0", "torchao==0.18.0"),
+        # Other/missing versions use the current default, never a legacy fallback.
+        ("2.9.0+cu128", "torchao==0.18.0"),
+        ("2.9.1", "torchao==0.18.0"),
+        ("2.8.0", "torchao==0.18.0"),
+        ("2.4.0", "torchao==0.18.0"),
+        (None, "torchao==0.18.0"),
+        ("", "torchao==0.18.0"),
+        ("garbage", "torchao==0.18.0"),
+        ("2", "torchao==0.18.0"),
+        ("3.0.0", "torchao==0.18.0"),
     ],
 )
 def test_select_torchao_spec(monkeypatch, torch_version, expected):
@@ -74,10 +81,11 @@ def test_select_torchao_spec(monkeypatch, torch_version, expected):
 
 
 def test_default_spec_matches_table(monkeypatch):
-    """The default/floor stays the historical pin so older torch is unchanged."""
+    """Unknown versions must not downgrade the maintained TorchAO installation."""
     mod = _load_module(monkeypatch)
-    assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
-    assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+    assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.18.0"
+    assert mod._select_torchao_spec("2.14.0") == mod._TORCHAO_DEFAULT_SPEC
+    assert mod._select_torchao_spec(None) == mod._TORCHAO_DEFAULT_SPEC
 
 
 def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
@@ -89,10 +97,10 @@ def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
 
 def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
     requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
-    assert 'einx<0.4.3; sys_platform == "win32"' in requirements
-    # einx dropped 3.9 in 0.4.0, so the non-Windows side is split by interpreter.
-    assert 'einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"' in requirements
-    assert 'einx==0.3.0; sys_platform != "win32" and python_version < "3.10"' in requirements
+    assert [line for line in requirements.splitlines() if line.startswith("einx")] == [
+        'einx==0.4.2; sys_platform == "win32"',
+        'einx==0.4.3; sys_platform != "win32"',
+    ]
 
 
 @pytest.mark.parametrize(
@@ -146,6 +154,7 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
+    monkeypatch.setattr(mod, "_repair_incompatible_protobuf_wheel", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
     monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
     # A Windows ROCm box has no usable NVIDIA GPU. Claiming one here described a
@@ -158,6 +167,7 @@ def test_skips_torchao_on_windows_rocm(
     # on the developer's machine: a CUDA workstation passed and a CPU-only CI runner
     # failed, on identical code.
     monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "")
+    monkeypatch.setattr(mod, "_installed_torch_version_label", lambda: "2.14.0+rocm7.2")
     monkeypatch.setattr(
         mod, "_probe_torch_runtime", lambda *args, **kwargs: (True, True, "2.9.1+cpu", "", "")
     )

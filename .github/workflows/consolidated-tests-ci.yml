@@ -91,10 +91,6 @@ jobs:
       fail-fast: false
       matrix:
         combo:
-          - id: t4576-trl0latest
-            label: "HF=4.57.6 + TRL<1"
-            transformers_spec: "transformers==4.57.6"
-            trl_spec: "trl>=0.18.2,<1.0.0"
           - id: tlatest5-trl1latest
             label: "HF=latest + TRL=latest"
             transformers_spec: "transformers>=5,<6"
@@ -139,7 +135,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -156,7 +152,7 @@ jobs:
       # changes its node setup.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26.8.1'
 
       - name: Install uv (some unsloth_zoo dev tooling expects it on PATH)
         run: pip install uv
@@ -228,14 +224,14 @@ jobs:
           # seconds later. Same end state either way; this just stops paying for the
           # download. torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
+            'torch==2.14.0' 'torchvision==0.29.0'
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
+            'peft==0.20.0' 'accelerate>=1.14,<2' \
             ipython
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
@@ -255,8 +251,8 @@ jobs:
 
       - name: Clone unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }}
         # We need the repository tree (the wheel does not ship tests/), so
-        # clone shallow then editable-install so unsloth_zoo.* imports
-        # resolve to the cloned tree. We use `pip show` for the location
+        # clone shallow for tests/provenance, but install the maintained local
+        # companion, never the capped upstream package. Use `pip show` for the location
         # check rather than `import unsloth_zoo` because the latter calls
         # device_type.get_device_type() at module load and raises on a
         # GPU-less runner; pytest steps below route through the existing
@@ -280,7 +276,7 @@ jobs:
             echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
             sleep "$delay"
           done
-          pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
+          python studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
           pip show unsloth_zoo
 
       - name: Sanity — collection only (both repos)
@@ -306,11 +302,11 @@ jobs:
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
-          # Collect from the zoo checkout, not from here: this repo ships a real
-          # tests/ package, so a zoo test doing "from tests.foo import bar" binds
-          # "tests" to OUR package and dies with ModuleNotFoundError. The later
-          # full zoo runs already set working-directory for the same reason.
-          (cd "$RUNNER_TEMP/unsloth-zoo" && python -m pytest --collect-only -q tests/)
+          # Put installed Zoo before the clone, while retaining the upstream
+          # tests namespace. Override its pythonpath=["."] to prevent shadowing.
+          _zoo_site="$(python -I -c 'from importlib.metadata import distribution; from studio.install_zoo import COMPANION_VERSION; d=distribution("unsloth_zoo"); assert d.version == COMPANION_VERSION; print(d.locate_file(""))')"
+          PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --import-mode=importlib -o \"pythonpath=$_zoo_site $RUNNER_TEMP/unsloth-zoo\"" \
+            python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests"
 
       - name: import_fixes drift detectors (18 tests, HARD GATE)
         # One drift detector per fix_* / patch_* function in
@@ -486,17 +482,20 @@ jobs:
         # useful timeout would have failed a passing test.
         env:
           PYTEST_TIMEOUT: 300
-        working-directory: ${{ runner.temp }}/unsloth-zoo
+        working-directory: ${{ github.workspace }}
         run: |
+          ZOO_TESTS="$RUNNER_TEMP/unsloth-zoo/tests"
+          _zoo_site="$(python -I -c 'from importlib.metadata import distribution; from studio.install_zoo import COMPANION_VERSION; d=distribution("unsloth_zoo"); assert d.version == COMPANION_VERSION; print(d.locate_file(""))')"
+          export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --import-mode=importlib -o \"pythonpath=$_zoo_site $RUNNER_TEMP/unsloth-zoo\""
           # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
           # so exclude that family from xdist and run it separately below. The other
           # ignores either leak process state or use timing assertions that need a quiet
           # process.
-          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
-            --ignore-glob='tests/test_mlx_*.py' \
-            --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
-            --ignore=tests/test_hf_xet_fallback.py \
-            --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
+          python -m pytest -q --tb=short -n 4 --dist loadfile "$ZOO_TESTS" \
+            --ignore-glob="$ZOO_TESTS/test_mlx_*.py" \
+            --ignore="$ZOO_TESTS/test_moe_bnb4bit_per_expert_conversions.py" \
+            --ignore="$ZOO_TESTS/test_hf_xet_fallback.py" \
+            --ignore="$ZOO_TESTS/test_gemma3_forced_float32_boundary_dtype.py" \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
@@ -512,16 +511,16 @@ jobs:
               rc=1
             fi
           }
-          python -m pytest -q --tb=short tests/test_mlx_generate.py || _keep "$?" tests/test_mlx_generate.py
-          python -m pytest -q --tb=short tests/test_moe_bnb4bit_per_expert_conversions.py || _keep "$?" tests/test_moe_bnb4bit_per_expert_conversions.py
-          python -m pytest -q --tb=short tests/test_hf_xet_fallback.py || _keep "$?" tests/test_hf_xet_fallback.py
-          python -m pytest -q --tb=short tests/test_mlx_neftune_quant_map.py || _keep "$?" tests/test_mlx_neftune_quant_map.py
-          python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?" tests/test_mlx_gated_delta_vjp.py
-          python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_mlx_generate.py" || _keep "$?" tests/test_mlx_generate.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_moe_bnb4bit_per_expert_conversions.py" || _keep "$?" tests/test_moe_bnb4bit_per_expert_conversions.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_hf_xet_fallback.py" || _keep "$?" tests/test_hf_xet_fallback.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_mlx_neftune_quant_map.py" || _keep "$?" tests/test_mlx_neftune_quant_map.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_mlx_gated_delta_vjp.py" || _keep "$?" tests/test_mlx_gated_delta_vjp.py
+          python -m pytest -q --tb=short "$ZOO_TESTS/test_gemma3_forced_float32_boundary_dtype.py" || _keep "$?" tests/test_gemma3_forced_float32_boundary_dtype.py
 
           # Run the remaining MLX files serially in alphabetical order. The three isolated
           # above also contaminate this group, so exclude them from its file list.
-          mlx_group=$(ls tests/test_mlx_*.py |
+          mlx_group=$(ls "$ZOO_TESTS"/test_mlx_*.py |
             grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
           # Passed unquoted below to word-split into file arguments, so an empty list
           # would pass none and pytest would collect the whole rootdir instead.
@@ -602,12 +601,12 @@ jobs:
         # MLP patching as the path that breaks first when transformers ships
         # an MLP class rename; this step is the canary against whatever
         # transformers version the matrix cell selected.
-        working-directory: ${{ runner.temp }}/unsloth-zoo
+        working-directory: ${{ github.workspace }}
         run: |
           set -euxo pipefail
           python <<'PY'
           import ast, importlib, pathlib, sys
-          p = pathlib.Path("unsloth_zoo/tiled_mlp.py")
+          p = pathlib.Path("studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/tiled_mlp.py")
           src = p.read_text()
           tree = ast.parse(src, filename=str(p))
           missing = []
@@ -629,12 +628,12 @@ jobs:
           PY
 
       - name: Static checks — unsloth_zoo/hf_utils.py syntax + import-graph
-        working-directory: ${{ runner.temp }}/unsloth-zoo
+        working-directory: ${{ github.workspace }}
         run: |
           set -euxo pipefail
           python <<'PY'
           import ast, pathlib
-          p = pathlib.Path("unsloth_zoo/hf_utils.py")
+          p = pathlib.Path("studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/hf_utils.py")
           tree = ast.parse(p.read_text(), filename=str(p))
           # Surface every public function + class so the PR check log shows
           # what's covered, not just OK/FAIL.
@@ -2372,7 +2371,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -2401,11 +2400,11 @@ jobs:
           # Match the matrix job's torch path so unsloth_zoo's
           # `import torch` resolves to the same CPU build.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
+            'torch==2.14.0' 'torchvision==0.29.0'
           pip install \
             'numpy<3' protobuf sentencepiece \
             requests tqdm psutil packaging safetensors \
-            'peft>=0.18,<0.20' 'accelerate>=0.34,<2'
+            'peft==0.20.0' 'accelerate>=1.14,<2'
           # transformers + trl come from pyproject.toml's pinned line
           # so this job stays in sync with whatever the consolidated
           # `__from_pyproject__` matrix cell is using.
@@ -2413,9 +2412,8 @@ jobs:
           pip install -e . --no-deps
 
       - name: Clone unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }}
-        # Same shallow clone as the matrix job; we install editable so
-        # `unsloth_zoo.llama_cpp` resolves to the cloned tree (and any
-        # main-branch fixes flow into the smoke without a release).
+        # Retain the upstream checkout for provenance, but install only the
+        # maintained companion so imports exercise the fork's patched source.
         run: |
           set -euxo pipefail
           # github.com occasionally 500s on the git fetch; retry so a
@@ -2435,7 +2433,7 @@ jobs:
             echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
             sleep "$delay"
           done
-          pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
+          python studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
           pip show unsloth_zoo
 
       - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke

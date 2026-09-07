@@ -29,6 +29,7 @@ from typing import List, Literal, Optional, Sequence, Tuple
 import typer
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
+from unsloth_cli._environment import environment_dir
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -107,6 +108,12 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             return Path(override).expanduser(), True
     try:
         prefix = Path(sys.prefix).resolve()
+        if (prefix / ".unsloth-studio-owned").is_file():
+            home_file = prefix / ".unsloth-studio-home"
+            if home_file.is_file():
+                recorded_home = home_file.read_text(encoding = "utf-8").strip()
+                if recorded_home and Path(recorded_home).is_absolute():
+                    return Path(recorded_home).resolve(), True
         if prefix.name == "unsloth_studio":
             inferred = prefix.parent
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
@@ -126,6 +133,9 @@ def _ensure_studio_env_exported() -> None:
     studio subcommand entry rather than at import time, to avoid leaking env
     state into unrelated importers (tests, --help, CLI introspection).
     """
+    managed = environment_dir(STUDIO_HOME)
+    if managed != STUDIO_HOME / "unsloth_studio" and not _studio_stage.is_staging():
+        os.environ["UNSLOTH_ENV_DIR"] = str(managed)
     if not _STUDIO_HOME_IS_CUSTOM:
         return
     # Truthy-check (not setdefault) so a blank UNSLOTH_STUDIO_HOME= does not
@@ -222,6 +232,7 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
 # both halves and for the deliberate absence of -I.
 _WINDOWS_CLI_ENTRYPOINT = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "import sysconfig; sys.exit('Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t)') if not (sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')) else None; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
@@ -242,6 +253,7 @@ _WINDOWS_CLI_ENTRYPOINT = (
 # probe's answer the launch's answer.
 _MANAGED_CLI_IMPORT_PROBE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "import sysconfig; sys.exit('Unsloth requires standard-GIL CPython >=3.14.7,<3.15 (not 3.14t)') if not (sys.implementation.name == 'cpython' and (3,14,7) <= sys.version_info[:3] < (3,15,0) and sys.version_info.releaselevel == 'final' and not sysconfig.get_config_var('Py_GIL_DISABLED')) else None; "
     "from unsloth_cli import app; sys.exit(0)"
 )
 
@@ -426,9 +438,9 @@ def _emit_run_cloudflare_notice(
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / "unsloth_studio" / "Scripts" / "python.exe"
+        p = environment_dir(STUDIO_HOME) / "Scripts" / "python.exe"
     else:
-        p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
+        p = environment_dir(STUDIO_HOME) / "bin" / "python"
     return p if p.is_file() else None
 
 
@@ -659,9 +671,9 @@ def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     with the contradicting override still set. Idempotent, so chained entry points
     are free to call it twice.
     """
-    _venv = STUDIO_HOME / "unsloth_studio"
+    _venv = environment_dir(STUDIO_HOME)
     _arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+        Path(sys.prefix) if Path(sys.prefix).resolve() == _venv.resolve() else _venv
     )
     if _arch is not None and not silent:
         typer.echo(
@@ -689,7 +701,7 @@ def _find_run_py() -> Optional[Path]:
         "lib/python*/site-packages/studio/backend/run.py",
         "Lib/site-packages/studio/backend/run.py",
     ):
-        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
+        for match in environment_dir(STUDIO_HOME).glob(pattern):
             return match
     return None
 
@@ -701,7 +713,7 @@ def _install_state(deep: bool = False) -> dict:
     venv still inspects the venv the desktop app launches.
     """
     return _studio_deps.install_state(
-        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        extra_roots = (environment_dir(STUDIO_HOME),),
         deep = deep,
     )
 
@@ -775,7 +787,7 @@ def _find_setup_script(repo_root: Optional[Path] = None) -> Optional[Path]:
         f"lib/python*/site-packages/studio/{name}",
         f"Lib/site-packages/studio/{name}",
     ):
-        for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
+        for match in environment_dir(STUDIO_HOME).glob(pattern):
             return match
     return None
 
@@ -861,7 +873,7 @@ def _find_frontend_dist() -> Optional[Path]:
     that never received a vite build.
     """
     candidates: List[Path] = [_PACKAGE_ROOT / "studio" / "frontend" / "dist"]
-    venv_dir = STUDIO_HOME / "unsloth_studio"
+    venv_dir = environment_dir(STUDIO_HOME)
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
         "Lib/site-packages/studio/frontend/dist",
@@ -2003,8 +2015,8 @@ def studio_default(
     # launcher BEFORE the gate: a headless gate strips the seeded
     # .bootstrap_password, so aborting afterward (venv/run.py missing) would leave
     # must_change_password=1 with no password to log in.
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    studio_venv_dir = environment_dir(STUDIO_HOME)
+    in_studio_venv = Path(sys.prefix).resolve() == studio_venv_dir.resolve()
     # Before any of the three launch paths below, and before the environment is handed
     # to a child: an override contradicting single-arch wheels makes every kernel launch
     # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
@@ -2694,8 +2706,8 @@ def run(
     # the child launcher BEFORE the gate: a headless gate strips the seeded
     # .bootstrap_password, so aborting afterward (venv/entry point missing) would
     # leave must_change_password=1 with no password to log in.
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    studio_venv_dir = environment_dir(STUDIO_HOME)
+    in_studio_venv = Path(sys.prefix).resolve() == studio_venv_dir.resolve()
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -3723,11 +3735,10 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
 # The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
 # so a launcher fix reaches users without waiting for a release.
-_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
-_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
-# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
-# else, or plain http, is refused rather than followed.
-_INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
+_INSTALLER_URL_BASH = "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh"
+_INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1"
+# Repairs must use this fork's interpreter and dependency policy, not upstream defaults.
+_INSTALLER_FETCH_HOSTS = frozenset({"raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
@@ -3743,11 +3754,16 @@ _INSTALLER_MARKERS = {
 def _is_allowed_installer_url(url: str) -> bool:
     """https on a known host. Applied to the first request and to every redirect."""
     split = urllib.parse.urlsplit(url)
-    return split.scheme == "https" and split.hostname in _INSTALLER_FETCH_HOSTS
+    return (
+        split.scheme == "https"
+        and split.hostname in _INSTALLER_FETCH_HOSTS
+        and split.path.startswith("/darbotlabs/darbot-unsloth/")
+        and split.path.endswith(("/install.sh", "/install.ps1"))
+    )
 
 
 class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Keep the installer fetch on the unsloth.ai -> raw.githubusercontent chain."""
+    """Keep installer redirects within the maintained fork."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not _is_allowed_installer_url(newurl):
@@ -4019,12 +4035,21 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     is the shape behind "just re-run the installer", and it is only actionable
     if the update says so.
     """
-    managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
+    managed_venv = environment_dir(STUDIO_HOME)
     if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI does not live in the venv the update just wrote, so its own
         # file list describes the wrong tree. Silence beats a wrong answer.
         return
-    managed_names = (package_name, "unsloth-zoo")
+    no_torch = False
+    try:
+        manifest = _studio_deps.load_install_manifest_module()
+        no_torch = manifest is not None and manifest.recorded_no_torch() is True
+    except Exception:
+        pass
+    managed_names = (
+        (package_name, "unsloth-zoo")
+        if package_name == "unsloth" and not no_torch else (package_name,)
+    )
     managed_conflicts = _studio_deps.installed_metadata_conflicts(names = managed_names)
     if managed_conflicts:
         typer.echo("", err = True)
@@ -4080,19 +4105,15 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     # install root, and recorded_no_torch defaults to Path(sys.prefix). Passing
     # STUDIO_HOME would look one directory too high, find nothing, and silently
     # never fire. The early return above guarantees sys.prefix is that venv.
-    no_torch = False
-    try:
-        _manifest = _studio_deps.load_install_manifest_module()
-        no_torch = _manifest is not None and _manifest.recorded_no_torch() is True
-    except Exception:
-        no_torch = False
     if platform.system() == "Windows":
         prefix = ""
         if _STUDIO_HOME_IS_CUSTOM:
             prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
         if no_torch:
             prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
-        typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
+        if (os.environ.get("UNSLOTH_ENV_DIR") or "").strip():
+            prefix += "$env:UNSLOTH_ENV_DIR = '{}'; ".format(str(environment_dir(STUDIO_HOME)).replace("'", "''"))
+        typer.echo(f"  {prefix}irm {_INSTALLER_URL_PWSH} | iex", err = True)
     else:
         # The assignments go before `sh`, not before `curl`: that is the form
         # install.sh documents, and it is sh that reads them.
@@ -4101,7 +4122,9 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
             env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
         if no_torch:
             env += "UNSLOTH_NO_TORCH=1 "
-        typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
+        if (os.environ.get("UNSLOTH_ENV_DIR") or "").strip():
+            env += f"UNSLOTH_ENV_DIR={shlex.quote(str(environment_dir(STUDIO_HOME)))} "
+        typer.echo(f"  curl -fsSL {_INSTALLER_URL_BASH} | {env}sh", err = True)
     typer.echo("", err = True)
     # The installer installs the current requirement sets; it does not prune or
     # reinstall anything outside them. So a package left over from an older
@@ -4653,7 +4676,7 @@ class _WindowsLauncherUpdateTransaction:
         interpreter when a pip-installed or checkout CLI drives the update. Same
         distinction _studio_deps._managed_root draws for the damage scan.
         """
-        managed = STUDIO_HOME / "unsloth_studio"
+        managed = environment_dir(STUDIO_HOME)
         if (managed / "pyvenv.cfg").is_file():
             try:
                 foreign = managed.resolve() != Path(sys.prefix).resolve()

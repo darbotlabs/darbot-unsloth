@@ -301,11 +301,6 @@ pub async fn check_install_status() -> bool {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
-
     let mut child = match process::with_studio_runtime_launch_guard(|| {
         cmd.spawn().map_err(|error| error.to_string())
     }) {
@@ -705,8 +700,7 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 #[tauri::command]
 pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    open_existing_dir(&home.join(".unsloth").join("studio"))
+    open_existing_dir(&crate::studio_paths::selected_root()?)
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the

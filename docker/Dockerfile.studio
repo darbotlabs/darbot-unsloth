@@ -1,32 +1,32 @@
 # Full Unsloth image: base training stack + Studio + JupyterLab + sshd.
-# Published as unsloth/unsloth:studio (and default :latest); layers Studio on the
+# Locally built as darbot-unsloth:studio; layers Studio on the
 # lean core image and runs Studio:8000, JupyterLab:8888, sshd:22.
 #
-# Build (local, on top of the published base or one built from docker/Dockerfile):
-#   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth:core \
-#     -f docker/Dockerfile.studio -t unsloth/unsloth:studio docker/
+# Build on a matching locally built base:
+#   docker buildx build --build-arg BASE_IMAGE=darbot-unsloth:core \
+#     -f docker/Dockerfile.studio -t darbot-unsloth:studio docker/
 # Run:
 #   docker run --rm --gpus all -p 8000:8000 -p 8888:8888 \
-#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth/unsloth:studio
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface darbot-unsloth:studio
 #
 # Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
 # is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
 # :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without GPU passthrough add -e UNSLOTH_ALLOW_CPU=1:
 # training is unavailable but Studio chat / Data Recipes / GGUF / Jupyter work.
-# CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
+# No fork release image is assumed published. Build the matching base first.
 
-ARG BASE_IMAGE=unsloth/unsloth:core
+ARG BASE_IMAGE=darbot-unsloth:core
 
 # Builds the "Unsloth Dark" (Monokai) theme + Colab-style cell-nav keymap. Node
 # lives only in this throwaway stage; the final image copies just the prebuilt
 # labextension (runtime stays Node-free). Uses the base's bundled jlpm+jupyterlab.
 FROM ${BASE_IMAGE} AS labext-builder
 ENV DEBIAN_FRONTEND=noninteractive
-# JupyterLab 4.6 needs Node >=20; Ubuntu 24.04 ships 18, so pull Node 20 LTS from
-# NodeSource. This stage is thrown away, so the apt sources never reach runtime.
+# The frontend policy requires Node 26; Ubuntu 24.04 ships 18, so use NodeSource.
+# This stage is thrown away, so the apt sources never reach runtime.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
- && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 COPY jupyter/unsloth_labext /opt/labext-src
@@ -39,9 +39,7 @@ FROM ${BASE_IMAGE}
 # Studio source ref to clone. Defaults to main; CI pins it (same UNSLOTH_REF as
 # the base) so the published image is reproducible.
 ARG UNSLOTH_STUDIO_REF=main
-# unsloth-zoo ref overlaid into the Studio venv by install.sh --local. The publish
-# workflow passes ONE zoo ref to both builds, so Studio runs the same zoo as base.
-ARG UNSLOTH_STUDIO_ZOO_REF=main
+# The vendored Zoo companion follows that same Core source commit.
 # The SAME llama.cpp tag the base baked. setup.sh honours UNSLOTH_LLAMA_TAG;
 # without the pin the Studio build could re-resolve "latest" and diverge.
 ARG LLAMA_PREBUILT_TAG=latest
@@ -81,16 +79,14 @@ RUN apt-get update \
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
 #
 # UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
-# build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
-# Blackwell JIT (sm_103/sm_121) comes from the same cu13 NVRTC swap, repeated below.
+# build time would land on CPU). cu130 on both arches, mirroring the base.
 #
-# UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor so the
-# nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.
+# Both environments use the base's exact interpreter and wheel family.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64|arm64) TORCH_FAMILY="cu128" ;; \
+        amd64|arm64) TORCH_FAMILY="cu130" ;; \
         *) echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
  && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
@@ -98,37 +94,30 @@ RUN set -eux \
  && touch /opt/unsloth/llama.cpp/.unsloth-studio-owned \
  && git init -q "${UNSLOTH_STUDIO_HOME}/src" \
  && cd "${UNSLOTH_STUDIO_HOME}/src" \
- && git remote add origin https://github.com/unslothai/unsloth \
+ && git remote add origin https://github.com/darbotlabs/darbot-unsloth \
  && git fetch -q --depth 1 origin "${UNSLOTH_STUDIO_REF}" \
  && git checkout -q FETCH_HEAD \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
-    UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
-    UNSLOTH_PYTHON=3.12 \
+    UNSLOTH_PYTHON=/opt/unsloth-venv/bin/python \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base (version AND
     # CUDA family) before the dedup symlinks their CUDA libs. Compare to the base's
     # own torch (no hardcoded version); metadata only (QEMU arm64 can't import torch).
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
+ && BASE_PYTHON="$(/opt/unsloth-venv/bin/python -c 'import sys, sysconfig; print(sys.version, sysconfig.get_config_var("SOABI"))')" \
+ && STUDIO_PYTHON="$("${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c 'import sys, sysconfig; print(sys.version, sysconfig.get_config_var("SOABI"))')" \
+ && test "${BASE_PYTHON}" = "${STUDIO_PYTHON}" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys, sysconfig; from importlib.metadata import version; assert (3, 14, 7) <= sys.version_info[:3] < (3, 15) and not sysconfig.get_config_var('Py_GIL_DISABLED'); assert version('torch') == '${BASE_TORCH}', 'Base and Studio Torch builds differ'" \
     # setup.sh may relink llama-quantize into build/bin; prove it still resolves its
     # libraries. Content check, not rc: --help exits nonzero but prints usage.
  && { "${UNSLOTH_STUDIO_HOME}/llama.cpp/llama-quantize" --help 2>&1 || true; } | grep -q "usage" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           /root/.cache \
-    # Stage the Studio venv's NVRTC like the base (.cu128.orig default + .cu13
-    # alias, retargeted per device by select_cuda_jit_tools). Both arches.
- && for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
-        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ] && [ ! -L "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
-            mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
-            ln -s libnvrtc.so.12.cu128.orig "${NVRTC_DIR}/libnvrtc.so.12"; \
-            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12.cu13"; \
-        fi; \
-    done \
- && BASE_NV=/opt/unsloth-venv/lib/python3.12/site-packages/nvidia \
- && STU_NV="${UNSLOTH_STUDIO_HOME}/unsloth_studio/lib/python3.12/site-packages/nvidia" \
+ && BASE_NV=/opt/unsloth-venv/lib/python3.14/site-packages/nvidia \
+ && STU_NV="${UNSLOTH_STUDIO_HOME}/unsloth_studio/lib/python3.14/site-packages/nvidia" \
  && if [ ! -d "${STU_NV}" ] || [ ! -d "${BASE_NV}" ]; then \
         echo ">> nvidia dir missing (STU=${STU_NV} BASE=${BASE_NV}); skipping CUDA dedup"; \
     else \
@@ -137,18 +126,18 @@ RUN set -eux \
         for c in cudnn cublas cusparselt nccl cusolver cusparse cufft curand nvjitlink cuda_cupti nvshmem npp; do \
             b="${BASE_NV}/${c}/lib"; s="${STU_NV}/${c}/lib"; \
             { [ -d "$b" ] && [ -d "$s" ]; } || { echo ">> skip ${c} (dir missing)"; continue; }; \
-            if [ "${c}" = "npp" ]; then \
-                rm -rf "$s" && ln -s "$b" "$s" && readlink -e "$s" >/dev/null; \
-                echo ">> deduped npp -> base (pruned)"; \
-            elif [ "$(cd "$s" && ls | sort | tr '\n' ' ')" = "$(cd "$b" && ls | sort | tr '\n' ' ')" ]; then \
+            if diff -qr "$s" "$b" >/dev/null; then \
                 rm -rf "$s" && ln -s "$b" "$s" && readlink -e "$s" >/dev/null; \
                 echo ">> deduped ${c} -> base"; \
             else \
-                echo ">> skip ${c} (file set differs base vs studio)"; \
+                echo ">> skip ${c} (library content differs base vs studio)"; \
             fi; \
         done; \
         echo "studio venv size after dedup:"; du -sh "${UNSLOTH_STUDIO_HOME}/unsloth_studio"; \
     fi
+
+RUN /opt/unsloth-venv/bin/uv pip check --python /opt/unsloth-venv/bin/python \
+ && /opt/unsloth-venv/bin/uv pip check --python "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python"
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch

@@ -11,6 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
+from unsloth_cli._environment import environment_dir
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
@@ -245,7 +246,12 @@ def stage(
     echo: Callable[[str], None],
     run_update: Callable[[Path, list[str]], int] = run_staged_update,
 ) -> dict:
-    live = studio_home / VENV_NAME
+    live = environment_dir(studio_home)
+    if (os.environ.get("UNSLOTH_ENV_DIR") or "").strip():
+        raise StageError(
+            "Staged desktop activation does not support UNSLOTH_ENV_DIR. "
+            "Use a direct update, or install.ps1 for a same-path Python rebuild."
+        )
     if not (live / "pyvenv.cfg").is_file():
         raise StageError(f"no managed environment at {live}")
     root = stage_root(studio_home)

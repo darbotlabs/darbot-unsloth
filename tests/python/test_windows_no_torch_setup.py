@@ -65,6 +65,74 @@ def test_no_torch_value_is_normalized_before_shared_dependency_install():
     assert parsed < normalized < stack_install
 
 
+@pytest.mark.parametrize("migrated", [False, True])
+@pytest.mark.parametrize("local", [False, True])
+@pytest.mark.parametrize("runtime_available", [False, True])
+def test_root_no_torch_resolves_core_without_bootstrapping_or_overlaying_zoo(
+    migrated, local, runtime_available,
+):
+    source = (REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
+    bootstrap_start = source.index('    if ($SkipTorch) {\n        $_unslothNoTorchInstallSpec')
+    bootstrap_end = source.index("\n    if ($_Migrated) {", bootstrap_start)
+    install_end = source.index(
+        "\n    if ($StudioLocalInstall -and $env:UNSLOTH_CI_SOURCE_OVERLAY)", bootstrap_end,
+    )
+    script = """
+$ErrorActionPreference = 'Stop'
+$commands = [System.Collections.Generic.List[object]]::new()
+function substep { param($a, $b) }
+function Write-TauriLog { param($a, $b) }
+function Invoke-InstallCommand {
+    param([string]$Label, [scriptblock]$Command)
+    $commands.Add(@{
+        label=$Label; command=$Command.ToString()
+        coreSpec=$_unslothNoTorchInstallSpec; overlayArgs=$LocalCoreOverlayArgs
+    })
+    return 0
+}
+function Invoke-InstallCommandRetry {
+    param([string]$Label, [scriptblock]$Command)
+    Invoke-InstallCommand -Label $Label -Command $Command
+}
+function Find-NoTorchRuntimeFile { return 'no-torch-runtime.txt' }
+function Exit-InstallFailure { param([string]$Message); throw $Message }
+$SkipTorch = $true
+$TorchIndexUrl = 'https://download.pytorch.org/whl/cpu'
+$RepoRoot = 'selected-checkout'
+$_unslothReleaseInstallSpec = 'unsloth @ https://example.invalid/selected-source.zip#sha256=abc'
+"""
+    script += f"\n$_Migrated = ${str(migrated).lower()}\n"
+    script += f"$StudioLocalInstall = ${str(local).lower()}\n"
+    script += "$ZooHelper = '" + str(REPO_ROOT / "studio" / "install_zoo.py").replace("'", "''") + "'\n"
+    if not runtime_available:
+        script += "function Find-NoTorchRuntimeFile { return $null }\n"
+    script += source[bootstrap_start:install_end]
+    script += "\nConvertTo-Json -InputObject @($commands) -Compress\n"
+    result = run_pwsh(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+        check = False, capture_output = True, text = True,
+    )
+    if not runtime_available:
+        assert result.returncode != 0
+        assert "missing its GGUF runtime requirements" in result.stdout + result.stderr
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = json.loads(result.stdout)
+    assert any("install unsloth" in entry["label"] for entry in commands)
+    assert any("no-torch runtime" in entry["label"] for entry in commands)
+    for entry in commands:
+        assert "zoo" not in entry["label"].lower()
+        assert "$ZooSource" not in entry["command"]
+        assert "--no-deps" not in entry["command"]
+        assert "[studio]" in entry["coreSpec"]
+        if entry["label"] == "overlay local repo":
+            assert entry["overlayArgs"][:2] == ["-e", "selected-checkout[studio]"]
+            assert entry["overlayArgs"][2] == "--constraint"
+            assert entry["overlayArgs"][3].endswith("no-torch-constraints.txt")
+        else:
+            assert "@NoTorchConstraintArgs" in entry["command"]
+
+
 def _extract(pattern: str, source: str) -> str:
     match = re.search(pattern, source, flags = re.DOTALL)
     assert match is not None, f"setup.ps1 block not found: {pattern}"

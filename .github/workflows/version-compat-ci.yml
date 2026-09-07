@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
       - name: Install pytest only
         # packaging: the PEFT backfill suite loads unsloth/import_fixes.py by file path and
         # that module imports packaging.version at the top. It pulls in nothing heavier,
@@ -159,7 +159,7 @@ jobs:
         # key describe the payload. Unscoped, setup-python hashes dependency files
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -177,7 +177,7 @@ jobs:
           python -m pip install --upgrade pip
           # CPU torch (vllm/peft/st all depend on it).
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchcodec<0.10'
+            'torch==2.14.0' 'torchvision==0.29.0' 'torchcodec==0.16.0'
           # torchcodec is a hard requirement on transformers 5.x:
           # transformers/audio_utils.py:55 does
           #   `importlib.metadata.version("torchcodec")` UNCONDITIONALLY,
@@ -190,15 +190,15 @@ jobs:
           # we already pin above.
           # Ladder of supported floor versions per pyproject.toml.
           pip install \
-            'transformers>=4.56,<5.6' 'trl>=0.22,<0.26' \
+            'transformers==5.16.1' 'trl>=1,<2' \
             'peft>=0.18.0' 'sentence-transformers>=5.0' \
-            'accelerate>=1.0' 'datasets>=3.4,<5' \
+            'accelerate>=1.0' 'datasets==5.0.1' 'scikit-learn==1.9.0' \
             'bitsandbytes>=0.45.5' \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
             'huggingface_hub>=0.34' tqdm packaging psutil triton Pillow
           # Editable-install both repos so the test imports the
           # checkouts (not whatever stale PyPI version pip resolved).
-          pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
+          python unsloth/studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
           pip install --no-deps -e ./unsloth
       - name: Run vllm_compat zoo-imports tests under spoof
         env:
@@ -268,7 +268,7 @@ jobs:
         # key describe the payload. Unscoped, setup-python hashes dependency files
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -285,15 +285,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchcodec<0.10'
+            'torch==2.14.0' 'torchvision==0.29.0' 'torchcodec==0.16.0'
           # Ecosystem floors unsloth needs; TRL itself is installed last so it
           # can pull the transformers/peft it requires.
           pip install \
-            'transformers>=4.57' 'peft>=0.18.0' 'accelerate>=1.0' 'datasets>=3.4,<5' \
+            'transformers==5.16.1' 'peft>=0.19.1' 'accelerate>=1.0' 'datasets==5.0.1' \
             'bitsandbytes>=0.45.5' sentencepiece protobuf safetensors numpy 'pytest>=8' \
             'huggingface_hub>=0.34' tqdm packaging psutil triton Pillow
           pip install --upgrade trl
-          pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
+          python unsloth/studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
           pip install --no-deps -e ./unsloth
       - name: Fake-run vs TRL latest
         env:
@@ -359,7 +359,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
       - name: Install pytest
         run: pip install 'pytest>=8'
       - name: Run all version-compat suites in one process (no cache)

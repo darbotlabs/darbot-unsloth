@@ -36,10 +36,12 @@ _HELPERS=$(mktemp)
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_restore_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_commit_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_uv_venv_requested()/,/^}/p' "$INSTALL_SH"
 } > "$_HELPERS"
 for _needed in _python_skip_applies _python_is_skipped _python_request _start_studio_venv_replacement \
-               _discard_venv_for_recreate _restore_studio_venv_replacement _uv_venv_requested; do
+               _discard_venv_for_recreate _restore_studio_venv_replacement \
+               _commit_studio_venv_replacement _uv_venv_requested; do
     grep -q "^$_needed()" "$_HELPERS" || {
         echo "  FAIL: could not extract $_needed from install.sh"
         exit 1
@@ -256,7 +258,92 @@ assert_eq "a rollback copy is not clobbered when one is already in flight" \
 assert_eq "a recreate that works still replaces the environment" \
     "lost" "$(run_guard_failure false 0)"
 
+echo "=== dedicated external environment safety ==="
+_external_work="$SCRIPT_DIR/.external-environment-guard.$$"
+mkdir "$_external_work"
+STUDIO_HOME="$_external_work/data"
+UNSLOTH_ENV_DIR="$_external_work/external/venv"
+TAURI_MODE=false
+mkdir -p "$STUDIO_HOME" "$UNSLOTH_ENV_DIR"
+touch "$UNSLOTH_ENV_DIR/pyvenv.cfg"
+_external_guard=$(sed -n '/^VENV_DIR="\$STUDIO_HOME\/unsloth_studio"/,/^_VENV_ROLLBACK_DIR=""/p' "$INSTALL_SH" | sed '$d')
+[ -n "$_external_guard" ] || { echo "FAIL: external environment guard missing"; exit 1; }
+if (eval "$_external_guard") 2>/dev/null; then
+    assert_eq "an unowned external venv is rejected" "rejected" "accepted"
+else
+    assert_eq "an unowned external venv is rejected" "rejected" "rejected"
+fi
+touch "$UNSLOTH_ENV_DIR/.unsloth-studio-owned" "$UNSLOTH_ENV_DIR/USER_DATA"
+UNSLOTH_ENV_DIR="$UNSLOTH_ENV_DIR///"
+eval "$_external_guard"
+assert_eq "trailing slashes cannot turn a rollback into a child directory" \
+    "$_external_work/external/venv" "$VENV_DIR"
+_VENV_ROLLBACK_ACTIVE=false
+_VENV_ROLLBACK_DIR=""
+_start_studio_venv_replacement "$VENV_DIR"
+_external_backup="$_VENV_ROLLBACK_DIR"
+assert_eq "external rollback stays on the same filesystem" \
+    "$(dirname "$VENV_DIR")" "$(dirname "$_external_backup")"
+mkdir -p "$VENV_DIR"
+_commit_studio_venv_replacement
+assert_eq "successful external rebuild retains previous user data" \
+    "preserved" "$([ -f "$_external_backup/USER_DATA" ] && echo preserved || echo lost)"
+touch "$VENV_DIR/USER_DATA"
+if (
+    mv() { return 1; }
+    _discard_venv_for_recreate "$VENV_DIR"
+); then
+    assert_eq "failed rollback rename aborts recreation" "failed" "succeeded"
+else
+    assert_eq "failed rollback rename aborts recreation" "failed" "failed"
+fi
+assert_eq "failed rollback rename never deletes the original" \
+    "preserved" "$([ -f "$VENV_DIR/USER_DATA" ] && echo preserved || echo lost)"
+unset UNSLOTH_ENV_DIR
+rm -rf "$_external_work"
+
 rm -f "$_HELPERS" "$_GUARD" "$_DRIVER"
+
+echo "=== the fork interpreter policy (including --no-torch) ==="
+_test_python=$(command -v python || command -v python3)
+"$_test_python" - "$INSTALL_SH" <<'PY'
+import re
+import sys
+import sysconfig
+from collections import namedtuple
+from pathlib import Path
+from unittest.mock import patch
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+body = re.search(r"_python_meets_policy\(\) \{\n(.*?)\n\}", text, re.S).group(1)
+code = re.search(r"-c '(.*)'", body).group(1)
+Version = namedtuple("Version", "major minor micro releaselevel serial")
+for version, implementation, free_threaded, expected in [
+    ((3, 12, 12), "cpython", False, 1),
+    ((3, 13, 15), "cpython", False, 1),
+    ((3, 14, 6), "cpython", False, 1),
+    ((3, 14, 7), "cpython", False, 0),
+    ((3, 14, 8), "cpython", False, 0),
+    ((3, 15, 0), "cpython", False, 1),
+    ((3, 14, 7), "pypy", False, 1),
+    ((3, 14, 7), "cpython", True, 1),
+]:
+    with patch.object(sys, "version_info", Version(*version, "final", 0)), \
+         patch.object(sys.implementation, "name", implementation), \
+         patch.object(sysconfig, "get_config_var", return_value=free_threaded):
+        try:
+            exec(code)
+        except SystemExit as result:
+            assert result.code == expected, (version, implementation, free_threaded)
+with patch.object(sys, "version_info", Version(3, 14, 7, "candidate", 1)):
+    try:
+        exec(code)
+    except SystemExit as result:
+        assert result.code == 1
+assert 'PYTHON_VERSION="3.12"' not in text
+assert 'PYTHON_VERSION="3.13"' not in text
+print("PASS: lower/upper bounds, CPython, prerelease and free-threaded rejection")
+PY
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

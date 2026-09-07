@@ -2,28 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refuse backend source that needs a newer interpreter than the matrix floor.
+"""Check stdlib/API compatibility against the declared supported Python minor.
 
-A pull request runs Backend CI on the NEWEST interpreter only. Every older leg still runs
-on the push to main, so a version-specific break is caught at merge rather than never, but
-between opening a pull request and merging it nothing executes the backend on the oldest
-one. This closes as much of that gap as a static check can.
-
-Syntax is the easy half, and ``tests/test_python39_compatibility.py`` already covers it by
-parsing at the version ``pyproject.toml`` declares. Syntax is also not the shape this
-regression takes. The realistic mistake is reaching for a stdlib name that does not exist
-yet -- ``core/research_runs.py`` already uses ``anext``, which is 3.10 -- and that parses
-perfectly on every version and fails only when the line runs.
-
-So this asks vermin, which reads both syntax and stdlib API availability, and compares the
-answer against the oldest leg the workflow's own matrix declares rather than a number
-written here. Raise the floor in the matrix and this follows; use a symbol from above it
-and this fails in seconds, on every pull request, instead of on main in 23 minutes.
-
-What it cannot do, stated so nobody mistakes it for the legs it partly replaces: it does
-not run anything. Two interpreters that both accept a line can still behave differently on
-it, and a ``sys.version_info`` branch is only ever parsed here, never taken. That is what
-the full matrix on main is for.
+This fork runs one full CPython 3.14.7 CI leg, not an older-interpreter matrix.
+The workflow declares the exact patch floor; vermin checks the corresponding
+major/minor. Runtime guards enforce the patch floor and reject free-threaded
+builds. Static analysis supplements, rather than replaces, runtime tests.
 """
 
 from __future__ import annotations
@@ -78,7 +62,7 @@ FLOOR_KEY = "PYTHON_FLOOR"
 def declared_floor() -> tuple[int, int]:
     """The floor the workflow declares, as (major, minor)."""
     text = WORKFLOW.read_text(encoding = "utf-8")
-    found = re.search(rf"^\s*{FLOOR_KEY}:\s*['\"]?(\d+)\.(\d+)['\"]?\s*$", text, re.M)
+    found = re.search(rf"^\s*{FLOOR_KEY}:\s*['\"]?(\d+)\.(\d+)(?:\.\d+)?['\"]?\s*$", text, re.M)
     if not found:
         raise SystemExit(
             f"{WORKFLOW.name} declares no {FLOOR_KEY}, so this lint has no target. It is "
@@ -135,9 +119,8 @@ def main() -> int:
         f"::error title=Backend needs a newer Python than the matrix floor::"
         f"something under studio/backend or unsloth_cli requires more than Python {target}, "
         f"which is the "
-        f"floor studio-backend-ci declares. Nothing runs that interpreter any more, so "
-        f"this check is the only thing standing between an above-floor symbol and a user "
-        f"on that version. Either guard the usage behind a sys.version_info check, or "
+        f"floor studio-backend-ci declares. The full suite runs on that supported "
+        f"interpreter as well. Either guard an optional newer API appropriately, or "
         f"raise {FLOOR_KEY} in the workflow and say why."
     )
     return 1

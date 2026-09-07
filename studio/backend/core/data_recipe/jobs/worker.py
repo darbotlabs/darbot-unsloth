@@ -17,7 +17,7 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import build_config_builder, build_run_config, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
 # Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
@@ -98,8 +98,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
 
     try:
-        from data_designer.config.run_config import RunConfig
-
         rows = int(run.get("rows") or 1000)
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
@@ -118,8 +116,8 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner resets root logging in __init__; attach the queue handler to the named loggers so
-        # parser events survive.
+        # Keep Studio's root logging intact; forward recipe and scraper progress
+        # through the worker's event queue.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (
@@ -134,7 +132,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             logger.propagate = True
 
         if run_config_raw:
-            designer.set_run_config(RunConfig.model_validate(run_config_raw))
+            designer.set_run_config(build_run_config(run_config_raw))
 
         execution_type = str(run.get("execution_type") or "full").strip().lower()
         if execution_type == "preview":

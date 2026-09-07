@@ -21,6 +21,8 @@ DATASETS_DIR = BACKEND_DIR / "utils" / "datasets"
 HARDWARE_DIR = BACKEND_DIR / "utils" / "hardware"
 INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PY = STUDIO_DIR / "install_python_stack.py"
+# Keep Windows process creation from substituting its unqualified bash shim.
+BASH_EXE = shutil.which("bash") or "bash"
 
 DATA_COLLATORS = DATASETS_DIR / "data_collators.py"
 CHAT_TEMPLATES = DATASETS_DIR / "chat_templates.py"
@@ -46,7 +48,7 @@ def _has_uv() -> bool:
     return shutil.which("uv") is not None
 
 
-def _create_no_torch_venv(venv_dir: Path, python_version: str = "3.12") -> Path | None:
+def _create_no_torch_venv(venv_dir: Path, python_version: str = "3.14.7") -> Path | None:
     """Create a uv venv with no torch. Returns python path or None."""
     result = subprocess.run(
         ["uv", "venv", str(venv_dir), "--python", python_version],
@@ -81,7 +83,7 @@ def _run_in_sandbox(
 def _run_sh(script: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a bash snippet and return the result."""
     return subprocess.run(
-        ["bash", "-c", script],
+        [BASH_EXE, "-c", script],
         capture_output = True,
         timeout = timeout,
     )
@@ -151,9 +153,9 @@ def sandbox_dir(tmp_path):
     return tmp_path
 
 
-@pytest.fixture(params = ["3.12", "3.13"], scope = "module")
+@pytest.fixture(params = ["3.14.7"], scope = "module")
 def no_torch_venv(request, tmp_path_factory):
-    """Temporary uv venv with no torch; 3.12 = Intel Mac default, 3.13 = Apple Silicon/Linux."""
+    """Temporary no-torch venv using standard CPython 3.14.7 on every platform."""
     if not _has_uv():
         pytest.skip("uv not available")
 
@@ -669,21 +671,21 @@ class TestInstallShLogic:
         """)
         r = _run_sh(f"{script}" + "\n", timeout = 10)
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "--python", "3.12"],
+            [BASH_EXE, "-c", script + "\n", "_", "--python", "3.12"],
             capture_output = True,
             timeout = 10,
         )
         assert r.stdout.strip() == b"3.12"
 
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "--local", "--python", "3.11"],
+            [BASH_EXE, "-c", script + "\n", "_", "--local", "--python", "3.11"],
             capture_output = True,
             timeout = 10,
         )
         assert r.stdout.strip() == b"3.11"
 
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "--local"],
+            [BASH_EXE, "-c", script + "\n", "_", "--local"],
             capture_output = True,
             timeout = 10,
         )
@@ -712,7 +714,7 @@ class TestInstallShLogic:
             echo "$_USER_PYTHON"
         """)
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "--python"],
+            [BASH_EXE, "-c", script + "\n", "_", "--python"],
             capture_output = True,
             timeout = 10,
         )
@@ -720,41 +722,38 @@ class TestInstallShLogic:
         assert b"ERROR" in r.stderr
 
     def test_python_version_resolution(self):
-        """Python version defaults to 3.12 on Intel Mac, 3.13 elsewhere.
-        --python overrides both."""
+        """Every platform defaults to 3.14.7; a supported patch override is preserved."""
         script = textwrap.dedent("""\
             MAC_INTEL="$1"
             _USER_PYTHON="$2"
 
             if [ -n "$_USER_PYTHON" ]; then
                 PYTHON_VERSION="$_USER_PYTHON"
-            elif [ "$MAC_INTEL" = true ]; then
-                PYTHON_VERSION="3.12"
             else
-                PYTHON_VERSION="3.13"
+                PYTHON_VERSION="3.14.7"
             fi
             echo "$PYTHON_VERSION"
         """)
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "true", ""],
+            [BASH_EXE, "-c", script + "\n", "_", "true", ""],
             capture_output = True,
             timeout = 10,
         )
-        assert r.stdout.strip() == b"3.12"
+        assert r.stdout.strip() == b"3.14.7"
 
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "false", ""],
+            [BASH_EXE, "-c", script + "\n", "_", "false", ""],
             capture_output = True,
             timeout = 10,
         )
-        assert r.stdout.strip() == b"3.13"
+        assert r.stdout.strip() == b"3.14.7"
 
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "true", "3.11"],
+            [BASH_EXE, "-c", script + "\n", "_", "true", "3.14.8"],
             capture_output = True,
             timeout = 10,
         )
-        assert r.stdout.strip() == b"3.11"
+        assert r.stdout.strip() == b"3.14.8"
 
     def test_mac_intel_detection_snippet(self):
         """Architecture detection sets MAC_INTEL correctly for different platforms."""
@@ -775,7 +774,7 @@ class TestInstallShLogic:
         ]
         for (os_val, arch), expected in cases:
             r = subprocess.run(
-                ["bash", "-c", script + "\n", "_", os_val, arch],
+                [BASH_EXE, "-c", script + "\n", "_", os_val, arch],
                 capture_output = True,
                 timeout = 10,
             )
@@ -798,14 +797,14 @@ class TestInstallShLogic:
             echo "$SHOULD_RECREATE"
         """)
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", "3.11"],
+            [BASH_EXE, "-c", script + "\n", "_", "3.11"],
             capture_output = True,
             timeout = 10,
         )
         assert r.stdout.strip() == b"false"
 
         r = subprocess.run(
-            ["bash", "-c", script + "\n", "_", ""],
+            [BASH_EXE, "-c", script + "\n", "_", ""],
             capture_output = True,
             timeout = 10,
         )

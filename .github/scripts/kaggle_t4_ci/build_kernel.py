@@ -842,7 +842,7 @@ def _make_venv(idx, system_site):
         # 3.12. The 3.13 runs then failed 3/3 in `Dataset.from_dict` -- see the
         # overlay comment below for why -- and the whole leg was resolving a
         # stack no Kaggle user has.
-        venv_cmd = [uv, "venv", str(vdir), "--seed", "--python", sys.executable]
+        venv_cmd = [uv, "venv", str(vdir), "--seed", "--python", "3.14.7"]
         if system_site:
             venv_cmd.append("--system-site-packages")
         subprocess.run(venv_cmd, check=True, timeout=900)
@@ -1775,7 +1775,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--studio-repo-url",
-        default = "https://github.com/unslothai/unsloth",
+        default = "https://github.com/darbotlabs/darbot-unsloth",
         help = "repository the Studio half checks out and installs",
     )
     ap.add_argument(

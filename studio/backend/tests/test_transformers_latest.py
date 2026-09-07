@@ -49,6 +49,14 @@ from utils.transformers_version import (
     latest_venv_pinned_version,
 )
 
+if sys.modules.get("loggers") is _loggers_stub:
+    sys.modules.pop("loggers")
+
+
+@pytest.fixture(autouse = True)
+def _legacy_base_without_fixed_tiers(monkeypatch):
+    monkeypatch.setattr(tv, "_base_transformers_supports", lambda tier: False)
+
 
 # A CONFIG_MAPPING_NAMES source exercising every construct the AST extractor supports.
 _MAPPING_SOURCE = """

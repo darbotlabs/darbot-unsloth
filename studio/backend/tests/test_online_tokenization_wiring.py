@@ -108,6 +108,7 @@ def _no_ambient_launcher(monkeypatch):
 
 class _Tokenizer:
     bos_token = "<s>"
+    eos_token = "</s>"
     chat_template = "{{ messages }}"
 
     def __call__(
@@ -169,6 +170,12 @@ def _run(
     **call_overrides,
 ):
     monkeypatch.setattr(sys, "platform", "linux")
+    # Python 3.14 defaults to forkserver; these wiring cases intentionally
+    # exercise the existing fork-only fast path rather than the host policy.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.dataloader_worker_start_method",
+        lambda: "fork",
+    )
     monkeypatch.delenv("UNSLOTH_STUDIO_ONLINE_TOKENIZATION", raising = False)
     # Pin the TRL hook: these cover the wiring, not the runner's TRL version.
     monkeypatch.setattr(
@@ -224,7 +231,7 @@ def test_the_lazy_view_yields_what_the_eager_map_would_have(monkeypatch):
     """Same tokenizer, same truncation, same `add_special_tokens`: the rows the
     collator sees must be identical, or the loss moves."""
     _, config_args, wrapper, trainer = _run(monkeypatch)
-    expected = _Tokenizer()(["row 3"], max_length = 2048)["input_ids"][0]
+    expected = _Tokenizer()(["row 3</s>"], max_length = 2048)["input_ids"][0]
     assert wrapper["dataset"][3]["input_ids"] == expected
 
 
@@ -238,10 +245,8 @@ def test_an_eval_split_is_transformed_with_the_same_settings(monkeypatch):
     assert "input_ids" in trainer._online_eval_dataset[0]
 
 
-def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
-    """TRL runs `_prepare_dataset` once per split, so `add_special_tokens` comes
-    from each split's own first row; reusing the train answer would shift every
-    eval sequence by a token whenever the splits disagree about a leading BOS."""
+def test_both_splits_match_native_trl_special_token_handling(monkeypatch):
+    """Native TRL calls the plain-text tokenizer with its default specials."""
 
     class _Recording(_Tokenizer):
         def __init__(self):
@@ -280,7 +285,7 @@ def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
 
     tokenizer.seen.clear()
     trainer._online_eval_dataset[0]
-    assert tokenizer.seen == [False], "an eval split that already has BOS must not get a second"
+    assert tokenizer.seen == [True], "eval must match native TRL, not the retired Zoo BOS rule"
 
 
 # ---------------------------------------------------- degradation: nothing touched

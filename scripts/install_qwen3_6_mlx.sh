@@ -85,15 +85,15 @@ step "platform" "macOS ($_ARCH)"
 
 # ── Detect Python ─────────────────────────────────────────────
 PYTHON=""
-for _candidate in python3.12 python3.11 python3.13 python3; do
-    if command -v "$_candidate" >/dev/null 2>&1; then
+for _candidate in python3.14 python3; do
+    if command -v "$_candidate" >/dev/null 2>&1 && "$_candidate" -c 'import sys, sysconfig; sys.exit(not (sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED")))'; then
         PYTHON="$_candidate"
         break
     fi
 done
 
 if [ -z "$PYTHON" ]; then
-    fail "Python 3 not found. Install via: brew install python@3.12"
+    fail "Standard CPython >=3.14.7,<3.15 required. Install via: brew install python@3.14"
 fi
 
 _PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
@@ -111,16 +111,17 @@ else
 fi
 
 # ── Install uv ───────────────────────────────────────────────
+"$VENV_DIR/bin/python" -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "Recreate this environment with standard CPython >=3.14.7,<3.15"'
 # Pin the uv installer payload by SHA-256. Rotate by running:
 #   curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
 # and updating the constant below. We fetch into a temp file, verify
 # the digest, and only then execute. Mismatch aborts.
-_UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
+_UV_INSTALLER_SHA256="a3196b75f697a1adaa5e4af34ffba7629c710931ab1dac33bab59ecf228080bb"
 
 if ! command -v uv >/dev/null 2>&1; then
     step "uv" "installing uv package manager..."
     _uv_tmp=$(mktemp)
-    curl -LsSf "https://astral.sh/uv/install.sh" -o "$_uv_tmp"
+    curl -LsSf "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-installer.sh" -o "$_uv_tmp"
     _uv_actual=$(shasum -a 256 "$_uv_tmp" | awk '{print $1}')
     if [ "$_uv_actual" != "$_UV_INSTALLER_SHA256" ]; then
         rm -f "$_uv_tmp"

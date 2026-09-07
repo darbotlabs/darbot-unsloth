@@ -233,7 +233,7 @@ export function AboutTab() {
         </SettingsRow>
         <SettingsRow label={t("settings.about.feedback")}>
           <a
-            href="https://github.com/unslothai/unsloth/issues"
+            href="https://github.com/darbotlabs/darbot-unsloth/issues"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"

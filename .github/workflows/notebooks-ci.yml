@@ -105,7 +105,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install validator deps
         run: |
@@ -226,7 +226,7 @@ jobs:
           path: notebooks
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: '3.12' }
+        with: { python-version: '3.14.7' }
       - name: Install
         run: pip install -U pip
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
@@ -296,7 +296,7 @@ jobs:
         # key describe the payload. Unscoped, setup-python hashes dependency files
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Restore the pip cache
         id: pip-cache
@@ -317,7 +317,7 @@ jobs:
           # easiest way to get a torch-compatible PIL on a CPU runner is
           # to let torchvision pull the right Pillow version.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-                      'torch>=2.8,<2.11' 'torchvision<0.26'
+                      'torch==2.14.0' 'torchvision==0.29.0'
           # Pin to the same versions update_all_notebooks.py installs in
           # generated notebooks. Keep these in lockstep with PIN_TRL /
           # PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py.
@@ -328,8 +328,8 @@ jobs:
           # Pillow is listed explicitly as a defensive belt-and-braces
           # next to torchvision (vision_utils crashes ModuleNotFoundError
           # if torchvision skipped its Pillow dep for any reason).
-          pip install 'transformers>=4.56,<5.6' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
-                      'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
+          pip install 'transformers==5.16.1' 'trl>=1,<2' 'accelerate>=1.0' \
+                      'datasets==5.0.1' 'peft>=0.19.1,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil
           # Converter deps (nbformat for notebook_to_python.py).
@@ -341,7 +341,7 @@ jobs:
           # unsloth_zoo from git main mirrors every other CI (Core / MLX /
           # install.sh) so PR-time validation sees the same zoo HEAD.
           for attempt in 1 2 3; do
-            if pip install --no-deps "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo"; then
+            if python unsloth/studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"; then
               break
             fi
             [ "$attempt" -eq 3 ] && { echo "::error::unsloth_zoo install failed after 3 attempts"; exit 1; }
@@ -394,7 +394,9 @@ jobs:
 
   smoke-install:
     name: smoke install (Colab-shaped venv, opt-in)
-    if: ${{ github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule' }}
+    # Historical Colab snapshot is Python 3.13, not this fork's runtime.
+    # Keep the fixture intact; enable only after a real 3.14 snapshot is captured.
+    if: ${{ vars.UNSLOTH_COLAB_PYTHON314_VALIDATED == 'true' && (github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     # Above the sum of every per-step cap below (8 restore + 3 seed + 28 install
     # + 10 save + 10 install-cell + 5 verify = 64, plus ~4 for the checkouts and
@@ -446,7 +448,7 @@ jobs:
       # record of that, and the seed step below fails loudly if the two drift
       # apart again rather than letting one pin resolve short.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with: { python-version: '3.13' }
+        with: { python-version: '3.14.7' }
 
       - name: Restore the pip cache
         id: pip-cache

@@ -101,10 +101,8 @@ fi
 _USER_PYTHON=""
 if [ -n "$_USER_PYTHON" ]; then
     PYTHON_VERSION="$_USER_PYTHON"
-elif [ "$MAC_INTEL" = true ]; then
-    PYTHON_VERSION="3.12"
 else
-    PYTHON_VERSION="3.13"
+    PYTHON_VERSION="3.14.7"
 fi
 echo "$OS $MAC_INTEL $PYTHON_VERSION"
 SNIPPET
@@ -119,7 +117,7 @@ uname() {
 }
 export -f uname
 '"source '$_ARCH_SNIPPET'")
-assert_eq "Darwin x86_64 -> macos true 3.12" "macos true 3.12" "$_result"
+assert_eq "Darwin x86_64 -> macos true 3.14.7" "macos true 3.14.7" "$_result"
 
 # Test: Darwin arm64 -> macos false 3.13
 _result=$(bash -c '
@@ -131,7 +129,7 @@ uname() {
 }
 export -f uname
 '"source '$_ARCH_SNIPPET'")
-assert_eq "Darwin arm64 -> macos false 3.13" "macos false 3.13" "$_result"
+assert_eq "Darwin arm64 -> macos false 3.14.7" "macos false 3.14.7" "$_result"
 
 # Test: Linux x86_64 -> linux false 3.13
 _result=$(bash -c '
@@ -143,7 +141,7 @@ uname() {
 }
 export -f uname
 '"source '$_ARCH_SNIPPET'")
-assert_eq "Linux x86_64 -> linux false 3.13" "linux false 3.13" "$_result"
+assert_eq "Linux x86_64 -> linux false 3.14.7" "linux false 3.14.7" "$_result"
 
 # Test: Linux aarch64 -> linux false 3.13
 _result=$(bash -c '
@@ -155,7 +153,7 @@ uname() {
 }
 export -f uname
 '"source '$_ARCH_SNIPPET'")
-assert_eq "Linux aarch64 -> linux false 3.13" "linux false 3.13" "$_result"
+assert_eq "Linux aarch64 -> linux false 3.14.7" "linux false 3.14.7" "$_result"
 
 rm -f "$_ARCH_SNIPPET"
 
@@ -258,19 +256,19 @@ else
 fi
 
 echo ""
-echo "=== E2E: venv creation at Python 3.12 (simulated Intel Mac) ==="
+echo "=== E2E: venv creation at Python 3.14.7 (simulated Intel Mac) ==="
 
 # Actually create a uv venv at Python 3.12 to verify the path works
 if command -v uv >/dev/null 2>&1; then
     _VENV_DIR=$(mktemp -d)
-    _uv_result=$(uv venv "$_VENV_DIR/test_venv" --python 3.12 2>&1) && _uv_rc=0 || _uv_rc=$?
+    _uv_result=$(uv venv "$_VENV_DIR/test_venv" --python 3.14.7 2>&1) && _uv_rc=0 || _uv_rc=$?
     if [ "$_uv_rc" -eq 0 ]; then
-        echo "  PASS: uv venv created at Python 3.12"
+        echo "  PASS: uv venv created at Python 3.14.7"
         PASS=$((PASS + 1))
 
         # Verify Python version inside the venv
-        _py_ver=$("$_VENV_DIR/test_venv/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        assert_eq "venv Python is 3.12" "3.12" "$_py_ver"
+        _py_ver=$("$_VENV_DIR/test_venv/bin/python" -c "import platform; print(platform.python_version())")
+        assert_eq "venv Python is 3.14.7" "3.14.7" "$_py_ver"
 
         # Verify torch is NOT available (fresh venv has no torch)
         if "$_VENV_DIR/test_venv/bin/python" -c "import torch" 2>/dev/null; then
@@ -436,10 +434,8 @@ _USER_PYTHON="$1"
 MAC_INTEL="$2"
 if [ -n "$_USER_PYTHON" ]; then
     PYTHON_VERSION="$_USER_PYTHON"
-elif [ "$MAC_INTEL" = true ]; then
-    PYTHON_VERSION="3.12"
 else
-    PYTHON_VERSION="3.13"
+    PYTHON_VERSION="3.14.7"
 fi
 echo "$PYTHON_VERSION"
 RESOLVE_EOF
@@ -451,10 +447,10 @@ _result=$(bash "$_RESOLVE_BLOCK" "3.12" "false")
 assert_eq "--python 3.12 overrides default 3.13" "3.12" "$_result"
 
 _result=$(bash "$_RESOLVE_BLOCK" "" "true")
-assert_eq "no override -> Intel Mac gets 3.12" "3.12" "$_result"
+assert_eq "no override -> Intel Mac gets 3.14.7" "3.14.7" "$_result"
 
 _result=$(bash "$_RESOLVE_BLOCK" "" "false")
-assert_eq "no override -> non-Intel gets 3.13" "3.13" "$_result"
+assert_eq "no override -> non-Intel gets 3.14.7" "3.14.7" "$_result"
 
 rm -f "$_RESOLVE_BLOCK"
 
@@ -622,7 +618,7 @@ _run_uv_venv() {
     while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
     echo "$sel" >> "$RECREATE_LOG"
     case "$sel" in
-        cpython-3.12-*) make_python "$dir" arm64 3.12.7 ;;
+        cpython-3.14.7-*) make_python "$dir" arm64 3.14.7 ;;
         cpython-3.13-*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
     esac
 }
@@ -646,11 +642,11 @@ RUNNER_EOF
     assert_eq "x86_64 venv rebuilt as arm64" \
         "arm64 3.13.3 | cpython-3.13-macos-aarch64-none" \
         "$(_run_guard '' macos arm64 x86_64 3.13.3 '')"
-    assert_eq "x86_64 venv that lands on 3.13.8 is rebuilt then downgraded to 3.12" \
-        "arm64 3.12.7 | cpython-3.13-macos-aarch64-none,cpython-3.12-macos-aarch64-none" \
+    assert_eq "legacy x86_64 venv on a bad patch is upgraded to 3.14.7" \
+        "arm64 3.14.7 | cpython-3.13-macos-aarch64-none,cpython-3.14.7-macos-aarch64-none" \
         "$(_run_guard '' macos arm64 x86_64 3.13.3 3.13.8)"
-    assert_eq "arm64 3.13.8 venv downgraded to 3.12" \
-        "arm64 3.12.7 | cpython-3.12-macos-aarch64-none" \
+    assert_eq "arm64 3.13.8 venv upgraded to 3.14.7" \
+        "arm64 3.14.7 | cpython-3.14.7-macos-aarch64-none" \
         "$(_run_guard '' macos arm64 arm64 3.13.8 '')"
     assert_eq "--python override skips the guard entirely" \
         "x86_64 3.13.3 | " "$(_run_guard 3.11 macos arm64 x86_64 3.13.3 '')"

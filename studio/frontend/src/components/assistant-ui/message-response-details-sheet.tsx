@@ -22,7 +22,7 @@ import {
 } from "@/features/chat";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
-import { useMessage, useMessageTiming } from "@assistant-ui/react";
+import { useAuiState, useMessageTiming } from "@assistant-ui/react";
 import { HelpCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { FC, ReactNode } from "react";
@@ -249,7 +249,7 @@ function DetailRow({
 }
 
 function useResponseModelDisplay() {
-  const message = useMessage();
+  const message = useAuiState((state) => state.message);
   const models = useChatRuntimeStore((s) => s.models);
   const providers = useExternalProvidersStore((s) => s.providers);
 

@@ -44,6 +44,7 @@ class ParsedUpdate:
     usage_rpm: float | None = None
     usage_section_start: bool | None = None
     source_progress: SourceProgress | None = None
+    progress_columns_total: int | None = None
 
 
 # Best-effort parser from data-designer logs -> structured status for UI.
@@ -58,7 +59,14 @@ _RE_COLCFG = re.compile(r"model config for column '(?P<col>[^']+)'")
 _RE_PROCESSING_COL = re.compile(r"Processing .* column '(?P<col>[^']+)'")
 _RE_PROGRESS = re.compile(
     r"progress: (?P<done>\d+)/(?P<total>\d+) \((?P<pct>\d+)%\) complete, "
-    r"(?P<ok>\d+) ok, (?P<failed>\d+) failed, (?P<rate>[0-9.]+) rec/s, eta (?P<eta>[0-9.]+)s"
+    r"(?P<ok>\d+) ok, (?P<failed>\d+) failed(?:, \d+ skipped)?, "
+    r"(?P<rate>[0-9.]+) rec/s, eta (?P<eta>[0-9.]+s|unknown)"
+)
+_RE_ASYNC_START = re.compile(r"Async generation: (?P<cols>\d+) column\(s\)")
+_RE_ASYNC_PROGRESS = re.compile(
+    r"(?:column '(?P<quoted_col>[^']+)'|(?P<col>\w[\w .-]*)): "
+    r"(?P<done>\d+)/(?P<total>\d+) \((?P<pct>\d+)%\) "
+    r"(?P<rate>[0-9.]+) rec/s(?:, \d+ skipped)?$"
 )
 _RE_BATCH = re.compile(r"Processing batch (?P<idx>\d+) of (?P<total>\d+)")
 _RE_USAGE_MODEL = re.compile(r"model:\s*(?P<model>.+)$")
@@ -264,9 +272,33 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
             ok = int(m.group("ok")),
             failed = int(m.group("failed")),
             rate = float(m.group("rate")),
-            eta_sec = float(m.group("eta")),
+            eta_sec = None if m.group("eta") == "unknown" else float(m.group("eta")[:-1]),
         )
         return ParsedUpdate(stage = STAGE_GENERATING, progress = p)
+
+    m = _RE_ASYNC_START.search(msg)
+    if m:
+        return ParsedUpdate(
+            stage = STAGE_GENERATING,
+            progress_columns_total = int(m.group("cols")),
+        )
+
+    m = _RE_ASYNC_PROGRESS.search(msg)
+    if m:
+        done, total = int(m.group("done")), int(m.group("total"))
+        rate = float(m.group("rate"))
+        return ParsedUpdate(
+            stage = STAGE_GENERATING,
+            current_column = (m.group("quoted_col") or m.group("col")).strip(),
+            rows = total,
+            progress = Progress(
+                done = done,
+                total = total,
+                percent = float(m.group("pct")),
+                rate = rate,
+                eta_sec = max(0, total - done) / rate if rate > 0 else None,
+            ),
+        )
 
     m = _RE_BATCH.search(msg)
     if m:
@@ -318,6 +350,8 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         job.rows = update.rows
     if update.cols is not None:
         job.cols = update.cols
+    if update.progress_columns_total is not None:
+        job.progress_columns_total = update.progress_columns_total
     if update.progress is not None:
         job.column_progress = update.progress
         if (

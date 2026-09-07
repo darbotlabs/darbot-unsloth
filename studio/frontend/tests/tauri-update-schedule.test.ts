@@ -17,6 +17,8 @@ type UpdateController = {
 type Listener = EventListenerOrEventListenerObject;
 
 interface HookHarnessOptions {
+  updatesEnabled?: boolean;
+  rejectPolicy?: boolean;
   failCheckAt?: number;
   holdPreparation?: boolean;
   noUpdateAt?: number;
@@ -222,6 +224,8 @@ function createHookReact() {
 function hookHarness(
   t: TestContext,
   {
+    updatesEnabled = true,
+    rejectPolicy = false,
     failCheckAt,
     holdPreparation = false,
     noUpdateAt,
@@ -298,8 +302,9 @@ function hookHarness(
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
         if (command === "desktop_update_policy") {
+          if (rejectPolicy) throw new Error("policy unavailable");
           return {
-            mode: "in_app",
+            mode: updatesEnabled ? "in_app" : "disabled",
             releasePageBaseUrl: "https://example.com/",
             releaseTagPrefix: "v",
           };
@@ -328,6 +333,23 @@ function hookHarness(
 function settle(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("fork builds without a signed update channel never query the updater", async (t) => {
+  const hook = hookHarness(t, { updatesEnabled: false });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  await hook.controller.checkForUpdate();
+  await hook.controller.installUpdate();
+  assert.equal(hook.checks(), 0);
+  assert.equal(hook.statusUpdates.at(-1), "idle");
+});
+
+test("an unavailable update policy fails closed instead of using an upstream channel", async (t) => {
+  const hook = hookHarness(t, { rejectPolicy: true });
+  await hook.controller.checkForUpdate();
+  assert.equal(hook.checks(), 0);
+  assert.equal(hook.statusUpdates.at(-1), "idle");
+});
 
 test("the desktop hook checks at startup and every hour", async (t) => {
   const hook = hookHarness(t);

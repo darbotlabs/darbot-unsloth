@@ -610,6 +610,27 @@ def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys
     assert seen["root"] is None
 
 
+@pytest.mark.parametrize("no_torch", [False, True])
+def test_metadata_verification_defers_zoo_in_no_torch_profile(monkeypatch, no_torch):
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", lambda: [])
+    monkeypatch.setattr(
+        studio._studio_deps, "load_install_manifest_module",
+        lambda: SimpleNamespace(recorded_no_torch = lambda: no_torch),
+    )
+    checks = []
+
+    def conflicts(**kwargs):
+        checks.append(kwargs)
+        return []
+
+    monkeypatch.setattr(studio._studio_deps, "installed_metadata_conflicts", conflicts)
+    studio._fail_if_install_damaged()
+    names = ("unsloth",) if no_torch else ("unsloth", "unsloth-zoo")
+    assert checks == [{"names": names}, {"exclude_names": names}]
+
+
 @pytest.mark.parametrize("recorded", [False, None])
 def test_an_unrecorded_or_torch_install_does_not_gain_the_flag(monkeypatch, capsys, recorded):
     # recorded_no_torch() returns None when nothing recorded the mode, and its contract is that
@@ -648,7 +669,7 @@ def test_the_default_root_keeps_the_plain_command(monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
     err = capsys.readouterr().err
-    assert "curl -fsSL https://unsloth.ai/install.sh | sh" in err
+    assert f"curl -fsSL {studio._INSTALLER_URL_BASH} | sh" in err
     assert "UNSLOTH_STUDIO_HOME" not in err
 
 

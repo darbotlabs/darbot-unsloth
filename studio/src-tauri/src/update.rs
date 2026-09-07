@@ -30,6 +30,9 @@ pub(crate) fn is_staged_update_running(state: &UpdateState) -> bool {
 }
 
 pub(crate) fn staged_update_is_owned_elsewhere() -> bool {
+    if !crate::staged_update::uses_default_environment() {
+        return false;
+    }
     let home = crate::diagnostics::studio_dir();
     staged_update_is_owned_elsewhere_at(&home, || {
         crate::process::with_studio_runtime_launch_guard(|| Ok(()))
@@ -123,17 +126,17 @@ fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command,
     Ok(cmd)
 }
 
-fn configure_tauri_update_environment(cmd: &mut Command) {
+fn configure_tauri_update_environment(cmd: &mut Command) -> Result<(), String> {
     // The desktop owns both its shortcuts and its frontend bundle. The managed
     // Python update only needs backend dependencies and native helpers.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    crate::studio_paths::apply_child_root(cmd)?;
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
         crate::preflight::expected_backend_version(),
     );
+    Ok(())
 }
 
 fn configure_staged_update_environment(cmd: &mut Command) {
@@ -167,6 +170,9 @@ fn spawn_update(
     ),
     String,
 > {
+    if matches!(kind, UpdateKind::Staged { .. }) {
+        require_default_staged_environment()?;
+    }
     let mut update = state.lock().map_err(|e| e.to_string())?;
     if update.child.is_some() {
         return Err("Update is already running.".to_string());
@@ -205,7 +211,7 @@ fn spawn_update(
 
     // Keep the update on the desktop-managed install and avoid rebuilding assets
     // that are already compiled into the signed Tauri bundle.
-    configure_tauri_update_environment(&mut cmd);
+    configure_tauri_update_environment(&mut cmd)?;
     if matches!(kind, UpdateKind::Staged { .. }) {
         configure_staged_update_environment(&mut cmd);
     }
@@ -383,6 +389,7 @@ pub(crate) fn run_staged_update(
     shell_version: Option<String>,
     backend_version: Option<String>,
 ) -> Result<(), String> {
+    require_default_staged_environment()?;
     run_update(
         app,
         state,
@@ -392,6 +399,14 @@ pub(crate) fn run_staged_update(
             backend_version,
         },
     )
+}
+
+fn require_default_staged_environment() -> Result<(), String> {
+    if crate::staged_update::uses_default_environment() {
+        Ok(())
+    } else {
+        Err("Staged desktop updates are unavailable with UNSLOTH_ENV_DIR; update the explicit environment directly.".to_string())
+    }
 }
 
 fn run_update(
@@ -671,7 +686,7 @@ mod tests {
         use std::ffi::OsStr;
 
         let mut cmd = Command::new("unused");
-        configure_tauri_update_environment(&mut cmd);
+        configure_tauri_update_environment(&mut cmd).unwrap();
 
         for name in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
             assert!(cmd
@@ -787,25 +802,41 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    // command may move with it. macOS and Linux still exec the console script.
     #[cfg(not(windows))]
     #[test]
-    fn posix_update_command_still_execs_the_console_script() {
+    fn posix_update_command_uses_the_isolated_managed_interpreter() {
         use std::ffi::OsString;
 
-        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
-        let cmd = build_update_command(bin, UPDATE_ARGS).unwrap();
+        let environment = tempfile::tempdir().unwrap();
+        let bin = environment.path().join("unsloth");
+        let python = environment.path().join("python");
+        std::fs::write(&python, "").unwrap();
+        let cmd = build_update_command(&bin, UPDATE_ARGS).unwrap();
 
-        assert_eq!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(cmd.get_program(), python.as_os_str());
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
-            vec![OsString::from("studio"), OsString::from("update")]
+            ["-X", "utf8", "-I", "-c", crate::process::WINDOWS_CLI_ENTRYPOINT, "studio", "update"]
+                .into_iter().map(OsString::from).collect::<Vec<_>>()
         );
         for name in ["PYTHONHOME", "PYTHONPATH"] {
             assert!(cmd
                 .get_envs()
                 .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()));
         }
+    }
+
+    #[test]
+    fn explicit_environment_update_preserves_data_root_and_refuses_staging() {
+        crate::studio_paths::with_explicit_test_environment(|_, data| {
+            let mut command = Command::new("unused");
+            configure_tauri_update_environment(&mut command).unwrap();
+            for name in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
+                assert!(command.get_envs().any(|(key, value)| key == name && value == Some(data.as_os_str())));
+            }
+            assert!(require_default_staged_environment().is_err());
+            assert!(!staged_update_is_owned_elsewhere());
+        });
     }
 
     #[test]

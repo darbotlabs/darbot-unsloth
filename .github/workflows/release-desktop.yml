@@ -65,6 +65,7 @@ jobs:
   # cancelled and then touched nothing. Queue clearing is done by hand now.
   prepare-version:
     name: Prepare release versions
+    if: ${{ vars.UNSLOTH_DESKTOP_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     # Version resolution only; observed 8-16s.
     timeout-minutes: 15
@@ -580,7 +581,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: 24
+          node-version: '26.8.1'
 
       - name: Lockfile supply-chain audit (pre-install scan)
         shell: bash
@@ -617,7 +618,8 @@ jobs:
           node <<'JS'
           const { readFileSync } = require('node:fs');
 
-          const expected = 'https://github.com/unslothai/unsloth/releases/latest/download/latest.json';
+          const repository = process.env.GITHUB_REPOSITORY || 'darbotlabs/darbot-unsloth';
+          const expected = `https://github.com/${repository}/releases/latest/download/latest.json`;
           const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
           const endpoints = config.plugins?.updater?.endpoints;
           if (!Array.isArray(endpoints) || endpoints.length !== 1) {
@@ -628,6 +630,12 @@ jobs:
           }
           if (!endpoints[0].includes('/releases/latest/download/latest.json')) {
             throw new Error('Desktop updater endpoint must use repo-wide /releases/latest/ discovery');
+          }
+          if (!String(config.plugins?.updater?.pubkey || '').trim()) {
+            throw new Error('Configure a real fork signing public key before enabling desktop publication');
+          }
+          if (config.bundle?.createUpdaterArtifacts !== true) {
+            throw new Error('Enable signed updater artifacts only after configuring a real fork release');
           }
 
           const targets = config.bundle?.targets;

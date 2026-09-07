@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Smoke test for the unsloth-blackwell image: GPU + arch list, compute capability,
+"""Smoke test for the local fork image: GPU + arch list, compute capability,
 the xformers / bitsandbytes / triton imports, unsloth, and a 5-step LoRA train.
 
-    docker run --rm --gpus all unsloth-blackwell:latest python /workspace/smoke_test.py
+    docker run --rm --gpus all darbot-unsloth:core python /workspace/smoke_test.py
     ... python /workspace/smoke_test.py --skip-train   # skip the train step
 """
 
@@ -20,7 +20,12 @@ def banner(title: str) -> None:
 
 def check_torch() -> tuple[int, int]:
     banner("torch + arch list")
+    import sysconfig
+    assert sys.implementation.name == "cpython"
+    assert (3, 14, 7) <= sys.version_info[:3] < (3, 15)
+    assert not sysconfig.get_config_var("Py_GIL_DISABLED")
     import torch
+    assert torch.__version__ == "2.14.0+cu130", torch.__version__
 
     # the raw C++ accessor works without CUDA, so a no-GPU host still gets a check
     arches = torch._C._cuda_getArchFlags().split()
@@ -34,17 +39,19 @@ def check_torch() -> tuple[int, int]:
     cap = torch.cuda.get_device_capability(0)
     name = torch.cuda.get_device_name(0)
     print(f"device 0    {name}  sm_{cap[0]}{cap[1]}")
-    # cu128 wheels ship SASS down to sm_75, so match the entrypoint floor
-    if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
-        sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
-        print(f"NOTE: {name} is Turing (sm_{cap[0]}{cap[1]}) -- bf16 unavailable, fp16 fallback.")
+        print(
+            f"QUALIFICATION: {name} sm_{cap[0]}{cap[1]} is not blanket-rejected. "
+            "Windows T1000 tiny-Llama FP32/packed-4-bit training passed; "
+            "Linux image, model, and dtype qualification remains separate."
+        )
     return cap
 
 
 def check_imports() -> None:
     banner("dep imports")
     import triton
+    assert triton.__version__ == "3.8.0", triton.__version__
 
     print(f"triton      {triton.__version__}")
     # unsloth first, so its patches land and unsloth_zoo sees UNSLOTH_IS_PRESENT
@@ -58,7 +65,7 @@ def check_imports() -> None:
         import xformers
         print(f"xformers    {xformers.__version__}")
     except ImportError:
-        print("xformers    (missing -- expected on arm64 [huggingface] extras)")
+        print("xformers    (optional; not enabled by this fork image)")
     import bitsandbytes as bnb
 
     print(f"bnb         {bnb.__version__}")

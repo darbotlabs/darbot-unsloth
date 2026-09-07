@@ -45,7 +45,7 @@ from pathlib import Path
 
 # Placeholders substituted at build time from --unsloth-ref / --zoo-ref.
 ZOO = "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@{zoo_ref}"
-UNSLOTH = "unsloth @ git+https://github.com/unslothai/unsloth@{unsloth_ref}"
+UNSLOTH = "unsloth @ git+https://github.com/darbotlabs/darbot-unsloth@{unsloth_ref}"
 
 # Expands to a pin file's contents, one requirement per argument. Expanded at
 # BUILD time, not read on the kernel, so the generated notebook states the

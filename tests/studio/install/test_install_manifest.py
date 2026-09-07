@@ -381,6 +381,17 @@ def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
     assert state["reason"] == "studio_install_requirements_changed"
 
 
+def test_changed_no_torch_exclusions_invalidate_the_manifest(install_root, req_root):
+    exclusions = req_root / "no-torch-constraints.txt"
+    exclusions.write_text("torch<0\n", encoding = "utf-8")
+    im.write_manifest(
+        root = install_root, req_root = req_root, package_name = "pytest", no_torch = True,
+    )
+    exclusions.write_text("torch<0\ntriton<0\n", encoding = "utf-8")
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_requirements_changed"
+
+
 def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
     missing_root = tmp_path / "does" / "not" / "exist"
     assert im.write_manifest(root = missing_root, req_root = req_root) is None

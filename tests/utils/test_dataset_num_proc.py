@@ -765,8 +765,8 @@ def test_the_narrow_anchor_takes_over_when_the_block_drifts():
     source = _zoo_dataset_utils_source()
     # Drift the block without touching the line the fallback keys on.
     drifted = source.replace(
-        "            import multiprocessing as _mp\n",
-        "            import multiprocessing as _mp  # zoo refactor\n",
+        "            from unsloth_zoo.dataset_num_proc import get_dataset_num_proc\n",
+        "            from unsloth_zoo.dataset_num_proc import get_dataset_num_proc  # zoo refactor\n",
         1,
     )
     assert drifted != source
@@ -776,7 +776,7 @@ def test_the_narrow_anchor_takes_over_when_the_block_drifts():
     assert "_unsloth_get_dataset_num_proc" in result, "the fallback anchor did not apply"
     assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
     # Only the assignment was rewritten, so the Zoo's own sizing is still there, computing a value nothing reads.
-    assert "if _mp.get_start_method() != 'fork':" in result
+    assert "dataset_num_proc = get_dataset_num_proc(" in result
     assert len(warnings) == 1 and "moved in this unsloth_zoo" in warnings[0]
     ast.parse(result)
 
@@ -795,8 +795,8 @@ def test_neither_anchor_matching_only_warns():
             1,
         )
         .replace(
-            "            import multiprocessing as _mp\n",
-            "            import multiprocessing as _mp  # zoo refactor\n",
+            "            from unsloth_zoo.dataset_num_proc import get_dataset_num_proc\n",
+            "            from unsloth_zoo.dataset_num_proc import get_dataset_num_proc  # zoo refactor\n",
             1,
         )
     )
@@ -1611,7 +1611,7 @@ def test_the_fixture_really_neutralises_the_zoo_readers(dnp):
     module = sys.modules.get("unsloth_zoo.hf_xet_tuning")
     if module is None:
         pytest.skip("unsloth_zoo.hf_xet_tuning is not reachable here")
-    assert str(module.CGROUP_ROOT).startswith("/nonexistent"), module.CGROUP_ROOT
+    assert module.CGROUP_ROOT.as_posix().startswith("/nonexistent"), module.CGROUP_ROOT
     assert module._cgroup_v2_dirs() == []
     assert module._cgroup_v1_dirs("memory") == []
 

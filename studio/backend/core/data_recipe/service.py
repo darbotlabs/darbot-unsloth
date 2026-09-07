@@ -255,7 +255,6 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 def build_config_builder(recipe: dict[str, Any]):
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
-    from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
 
     recipe_core = {
         key: value
@@ -270,26 +269,20 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = oxc_local_callable_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
-    # survive the API payload.
-    for processor in recipe_core.get("processors") or []:
-        if not isinstance(processor, dict):
-            continue
-        processor_type_raw = processor.get("processor_type")
-        if not isinstance(processor_type_raw, str):
-            continue
-        kwargs = {k: v for k, v in processor.items() if k != "processor_type"}
-        builder.add_processor(
-            processor_type = ProcessorType(processor_type_raw),
-            **kwargs,
-        )
-
     return builder
+
+
+def build_run_config(config: dict[str, Any] | None = None):
+    from data_designer.config.run_config import RunConfig
+
+    # DD 0.9 starts a metrics listener on 9464 by default. Embedded recipe jobs
+    # must not compete for a process-external port unless explicitly requested.
+    return RunConfig.model_validate({"otel_metrics_port": None, **(config or {})})
 
 
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
     _apply_data_designer_image_context_patch()
-    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
+    from data_designer.interface import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
         # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
@@ -312,11 +305,14 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
             )
         ]
 
-    return DataDesigner(
+    designer = DataDesigner(
         artifact_path = artifact_path,
         model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
+        auto_configure_logging = False,
     )
+    designer.set_run_config(build_run_config())
+    return designer
 
 
 def validate_recipe(recipe: dict[str, Any]) -> None:

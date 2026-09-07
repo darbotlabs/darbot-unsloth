@@ -255,7 +255,8 @@ def test_xformers_step_runs_after_the_torch_flavor_repair():
     repair = source.index("$expectedTorchTag = Get-ExpectedTorchFlavorTag")
     xformers = source.index("xformers==$_xfVersion")
     overlay = source.index("UNSLOTH_CI_SOURCE_OVERLAY")
-    assert repair < xformers < overlay
+    setup = source.index("$UnslothExe = Join-Path $VenvDir")
+    assert overlay < repair < xformers < setup
 
 
 def test_xformers_step_is_skipped_for_no_torch_installs():

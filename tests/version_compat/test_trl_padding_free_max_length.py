@@ -328,9 +328,11 @@ def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
     assert trainer.args.max_length is None
     split = trainer.eval_dataset["validation"]
     # The raw split is untouched: no truncation ran over it, so the tokenizer pass that
-    # follows sees exactly what the user passed. A blanket map would have sliced it.
+    # follows sees exactly what the user passed. TRL 1.12 appends EOS before
+    # tokenizing; that must not be mistaken for slicing the original text.
     if "text" in (split.column_names or []):
-        assert all(r["text"] == text for r in split), "a raw column was sliced"
+        eos = trainer.processing_class.eos_token
+        assert all(r["text"] in (text, text + eos) for r in split), "a raw column was sliced"
 
 
 def test_a_torch_formatted_dataset_is_still_truncated(tmp_path, trl_has_guard):
@@ -461,12 +463,10 @@ def _short_transformed_dataset(tok):
     )
 
 
-def test_a_transformed_dataset_within_the_cap_is_not_refused(tmp_path, trl_has_guard):
-    """The refusal is on an OBSERVED overlength row, not on the dataset shape."""
-    trainer = _build(tmp_path, dataset = _short_transformed_dataset)
-    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
-    if trl_has_guard:
-        assert trainer.args.padding_free is False
+def test_a_transformed_dataset_requires_explicit_skip_preparation(tmp_path, trl_has_guard):
+    """TRL 1.12 refuses to materialize potentially random transforms, even short ones."""
+    with pytest.raises(ValueError, match = "with_transform"):
+        _build(tmp_path, dataset = _short_transformed_dataset)
 
 
 def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(tmp_path, trl_has_guard):
@@ -484,24 +484,17 @@ def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(tmp_path, tr
         )
 
 
-def test_a_transformed_eval_split_within_the_cap_is_not_refused(tmp_path, trl_has_guard):
-    """Not refused, but not counted as enforcement either.
-
-    A `with_transform` split rebuilds its rows on every read, so sitting under
-    the cap once proves nothing about the next read. The train-side test above
-    already keeps `max_length` for exactly that reason; treating the eval side
-    as enforced was the inconsistency, and it consumed the cap while leaving
-    padding-free on with nothing downstream to truncate."""
+def test_a_transformed_eval_split_requires_explicit_skip_preparation(tmp_path, trl_has_guard):
+    """The native TRL guard applies equally to training and evaluation transforms."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    trainer = _build(
-        tmp_path,
-        dataset = _tokenized_dataset,
-        eval_dataset = _short_transformed_dataset(tok),
-    )
-    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
-    assert trainer.args.padding_free is False
+    with pytest.raises(ValueError, match = "with_transform"):
+        _build(
+            tmp_path,
+            dataset = _tokenized_dataset,
+            eval_dataset = _short_transformed_dataset(tok),
+        )
 
 
 def test_the_truncation_map_resolves_the_serial_worker_sentinel():
@@ -942,7 +935,7 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
         assert any(
-            m != 0 for m in row["completion_mask"]
+            label != -100 for label in row["labels"]
         ), "a row with no supervised token survived truncation"
 
 
@@ -972,7 +965,7 @@ def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(tmp_path, trl_
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
         assert any(
-            m != 0 for m in row["assistant_masks"]
+            label != -100 for label in row["labels"]
         ), "a row TRL will label all -100 survived truncation"
 
 
@@ -2589,14 +2582,13 @@ def test_a_transformed_tokenized_split_keeps_its_cap(tmp_path, trl_has_guard):
 
 
 def test_a_transformed_split_within_the_cap_keeps_max_length_and_trains(tmp_path, trl_has_guard):
-    """The other half: the same shape with nothing overlength must not be cleared
-    either, and must not raise. This is what shows the raise above is about the
-    rows and not about the transform."""
+    """The explicit TRL 1.12 skip-preparation path preserves short lazy transforms."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     trainer = _build(
         tmp_path,
         dataset = _transformed_short_dataset,
+        dataset_kwargs = {"skip_prepare_dataset": True},
         padding_free = True,
         max_length = _MODEL_MAX_SEQ_LENGTH,
     )
@@ -2864,14 +2856,14 @@ def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
             padding_free = True,
             max_length = _MODEL_MAX_SEQ_LENGTH,
         )
-    # And held, not cleared, when the yielded rows do fit.
-    trainer = _build(
-        tmp_path,
-        eval_dataset = _transformed_short_dataset(tok),
-        padding_free = True,
-        max_length = _MODEL_MAX_SEQ_LENGTH,
-    )
-    assert trainer.args.max_length is not None, "nothing else truncates the yielded rows"
+    # TRL 1.12 also refuses short transforms unless preparation is explicitly skipped.
+    with pytest.raises(ValueError, match = "with_transform"):
+        _build(
+            tmp_path,
+            eval_dataset = _transformed_short_dataset(tok),
+            padding_free = True,
+            max_length = _MODEL_MAX_SEQ_LENGTH,
+        ), "nothing else truncates the yielded rows"
 
 
 # ── round fifteen: alignment, laziness, the cache key, and unknown modes ─────

@@ -58,7 +58,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
           # No cache. This job installs three linters and nothing else, so the ~9 MB it
           # would store is not worth a slot in a budget the model downloads are competing
           # for. It used to share one key with every other Python 3.12 job in the repo,

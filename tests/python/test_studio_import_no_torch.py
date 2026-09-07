@@ -37,9 +37,9 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
     return venv_python if venv_python.exists() else None
 
 
-@pytest.fixture(params = ["3.12", "3.13"], scope = "module")
+@pytest.fixture(params = ["3.14.7"], scope = "module")
 def no_torch_venv(request, tmp_path_factory):
-    """Temp no-torch venv, parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux)."""
+    """Use the same standard CPython 3.14.7 baseline on every platform."""
     if not _has_uv():
         pytest.skip("uv not available")
 

@@ -87,12 +87,13 @@ def _studio_env(tmp_path: Path, *, import_ok: bool) -> dict:
     return env
 
 
-def test_studio_update_restarts_when_the_backend_imports(tmp_path: Path):
+def test_studio_update_requires_rebuild_even_when_backend_imports(tmp_path: Path):
     env = _studio_env(tmp_path, import_ok = True)
     res = _run(STUDIO_UPDATE, [], env)
     calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
-    assert res.returncode == 0, res.stderr
-    assert "STUB-SUPERVISORCTL restart studio" in calls, calls
+    assert res.returncode != 0
+    assert not calls, calls
+    assert "rebuilding matching base and Studio images" in res.stderr
 
 
 def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_path: Path):
@@ -104,7 +105,7 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
         "fine and parks supervisord's studio program in FATAL:\n" + calls
     )
     assert res.returncode != 0, "a broken update must not report success"
-    assert "--with-deps" in res.stderr, "the remedy must still be printed"
+    assert "rebuilding matching base and Studio images" in res.stderr
 
 
 def _zoo_ref_env(tmp_path: Path, *, git_exit: int) -> dict:
@@ -123,21 +124,22 @@ def _zoo_spec(calls: str) -> str:
     return ""
 
 
-def test_studio_update_mirrors_the_ref_when_the_zoo_has_it(tmp_path: Path):
+def test_studio_update_ref_cannot_replace_the_vendored_companion(tmp_path: Path):
     env = _zoo_ref_env(tmp_path, git_exit = 0)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
-    assert res.returncode == 0, res.stderr
-    assert _zoo_spec(calls).endswith("@v2026.7.5#egg=unsloth_zoo"), calls
+    assert res.returncode != 0
+    assert not calls, calls
+    assert "vendored Zoo companion" in res.stderr
 
 
-def test_studio_update_falls_back_to_zoo_main_when_the_ref_is_absent(tmp_path: Path):
+def test_studio_update_does_not_fall_back_to_upstream_zoo(tmp_path: Path):
     env = _zoo_ref_env(tmp_path, git_exit = 2)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
-    assert res.returncode == 0, res.stderr
-    assert _zoo_spec(calls).endswith("@main#egg=unsloth_zoo"), calls
-    assert "has no ref" in res.stdout, res.stdout
+    assert res.returncode != 0
+    assert not calls, calls
+    assert "rebuilding matching base and Studio images" in res.stderr
 
 
 def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_path: Path):
@@ -151,7 +153,7 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
     assert "has no ref" not in res.stdout, (
         "an unreachable remote must not be reported as a missing ref:\n" + res.stdout
     )
-    assert "--zoo-ref" in res.stderr, "the remedy must be printed"
+    assert "rebuilding matching base and Studio images" in res.stderr
 
 
 def _llama_env(
@@ -355,22 +357,12 @@ def test_fetcher_normalizes_the_base_build_for_the_marker_tag(release_tag, expec
     assert _fetcher_module().base_build_tag(release_tag) == expected
 
 
-def test_a_failed_studio_update_says_the_venv_on_disk_is_already_replaced(tmp_path: Path):
-    """Not restarting protects the running process, and only the code it has already
-    imported: the backend defers thousands of imports, so a lazy one fails the same
-    way. The venv itself is under $UNSLOTH_STUDIO_HOME, which the header recommends
-    putting on a named volume, so the replacement also survives docker rm + docker run.
-    The message used to stop at "the running process keeps serving", which reads as
-    though nothing is wrong until the operator chooses to restart."""
+def test_a_refused_studio_update_preserves_the_environment_and_explains_migration(tmp_path: Path):
+    """An unsupported in-place update must do no work, not merely avoid restart."""
     env = _studio_env(tmp_path, import_ok = False)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode != 0, "a broken update must not report success"
     err = res.stderr.lower()
-    assert "already replaced" in err, (
-        "the failure never says the on-disk environment has been overwritten:\n" + res.stderr
-    )
-    assert "fatal" in err, "the failure never says a restart parks Studio in FATAL:\n" + res.stderr
-    assert "unsloth_studio_home" in err or "persisted home" in err, (
-        "the failure never says a persisted Studio home keeps it broken across a "
-        "container recreate:\n" + res.stderr
-    )
+    assert "back up studio data" in err
+    assert "recreate the container" in err
+    assert not Path(env["STUB_LOG"]).exists()

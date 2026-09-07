@@ -80,7 +80,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26.8.1'
           # No `cache: 'npm'`. setup-node's npm cache restore silently
           # aborts the entire job on Windows runners when the npm cache
           # path (`C:\npm\cache` per `npm config get cache`) doesn't yet
@@ -91,7 +91,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
           # No `cache: 'pip'`. install.ps1 / setup.ps1 use uv and
           # never populate ~/.cache/pip; setup-python's post-step
           # then fatal-errors with "Cache folder path is retrieved

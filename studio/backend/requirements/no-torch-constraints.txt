@@ -1,0 +1,11 @@
+# Apply ONLY to explicit --no-torch / GGUF-only installations, not CPU ML.
+# Constraints do not install packages: resolution must fail if any dependency
+# tries to introduce Torch, its Zoo companion, or a Triton compiler provider.
+torch<0
+torchvision<0
+torchaudio<0
+unsloth-zoo<0
+triton<0
+triton-windows<0
+triton-xpu<0
+triton-rocm<0

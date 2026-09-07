@@ -387,7 +387,8 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
     // `indices` is present (the `d` flag); group 1 spans the destination.
-    regions.push(match.indices![1]);
+    const destination = match.indices?.[1];
+    if (destination) regions.push(destination);
   }
   return regions;
 }

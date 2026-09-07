@@ -3,45 +3,15 @@
 # host GPU isn't reachable, catching the three modes behind ~95% of tickets:
 #   1. nvidia-smi sees no GPU (missing --gpus all or nvidia-container-toolkit)
 #   2. nvidia-smi works but torch.cuda.is_available() is False (driver too old)
-#   3. GPU older than Ampere (sm < 80; Unsloth requires sm_80+)
+#   3. GPU older than this CUDA image's Turing floor (sm < 75)
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# CUDA 13 ptxas + NVRTC are baked only for sm_103 and sm_121, which cu12.8 cannot
-# target and which ship on >=580 drivers; every other arch is cu12.8 on the 570-579
-# floor, where a cu13 cubin cannot load. So the choice is per DEVICE at boot.
+# CUDA 13 is native; never rewrite library SONAMEs across CUDA major versions.
 select_cuda_jit_tools() {
-    local caps="" cc nvrtc_dir need_cu13=0
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        caps="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } )"
-    fi
-    # scan EVERY visible GPU: an sm_103/sm_121 part can sit behind an H100
-    while IFS= read -r cc || [[ -n "${cc}" ]]; do
-        cc="$(printf '%s' "${cc}" | tr -d '[:space:]')"
-        case "${cc}" in
-            10.3|12.1) need_cu13=1 ;;
-        esac
-    done <<< "${caps}"
-    # reverse a .cu13 link an earlier sm_103/sm_121 boot left in the writable layer
-    if [[ "${need_cu13}" -ne 1 ]]; then
-        for nvrtc_dir in \
-            /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
-            "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
-            [[ -e "${nvrtc_dir}/libnvrtc.so.12.cu128.orig" ]] || continue
-            [[ "$(readlink "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null)" == "libnvrtc.so.12.cu13" ]] || continue
-            ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
-        done
-        return 0
-    fi
     if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
         export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
     fi
-    for nvrtc_dir in \
-        /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
-        "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
-        [[ -e "${nvrtc_dir}/libnvrtc.so.12.cu13" ]] || continue
-        ln -sf libnvrtc.so.12.cu13 "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
-    done
 }
 select_cuda_jit_tools || true
 
@@ -117,8 +87,8 @@ if torch.cuda.is_available():
     sys.exit(0)
 print("ERROR: torch.cuda.is_available() is False despite nvidia-smi working.")
 print()
-print("This image bakes in CUDA 12.8, so the host driver MUST be:")
-print("  >= 570.26   (toolkit floor for cu128, applies to every GPU)")
+print("This fork image uses CUDA 13.0; the host must have a CUDA 13-capable driver:")
+print("  >= 580      (all GPUs, no CUDA 12 fallback)")
 print()
 print("Two GPUs need an even newer driver because their launch driver was")
 print("released after cu128's:")
@@ -158,8 +128,10 @@ if major < 7 or (major == 7 and minor < 5):
         print(f"  {arch:7s} {fam:13s} ({ex})")
     sys.exit(1)
 if major < 8:
-    print(f"NOTE: {name} is Turing (sm_{major}{minor}) -- bfloat16 is not supported.")
-    print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
+    print(f"NOTE: {name} is Turing (sm_{major}{minor}) -- native BF16 acceleration is unavailable.")
+    print("      Turing is not blanket-blocked; support depends on the actual kernels and dtypes.")
+    print("      Full training is not certified by a successful import or one compiled operation.")
+    print("      Run the smoke test to qualify this image and device.")
 
 # an unsupported secondary only surfaces when a job pins to it, so warn now
 for d in range(1, n):
@@ -170,24 +142,6 @@ for d in range(1, n):
         print("         Multi-GPU runs that include it, or jobs pinned to it, will fail;")
         print("         exclude it with CUDA_VISIBLE_DEVICES or --gpus device=<supported>.")
 PY
-
-# Upstream ships no CUDA 12 arm64 llama.cpp, so the arm64 image bakes cu13 while torch
-# runs on 570+: below 580, GGUF export and Studio chat fail even though training works.
-if [ "$(uname -m)" = "aarch64" ]; then
-    _drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
-    _drv_major="${_drv%%.*}"
-    case "$_drv_major" in
-        *[!0-9]* | "") ;;  # unreadable driver version -> no claim to make
-        *)
-            if [ "$_drv_major" -lt 580 ]; then
-                echo "WARNING: this arm64 image bakes a CUDA 13 llama.cpp (upstream ships no CUDA 12 arm64 build)." >&2
-                echo "         Host driver $_drv is < 580, which cannot load CUDA 13 binaries:" >&2
-                echo "         training (torch cu128) works, but GGUF export / Studio chat will fail" >&2
-                echo "         until the host driver is upgraded to >= 580." >&2
-            fi
-            ;;
-    esac
-fi
 
 sync_notebooks
 exec "$@"

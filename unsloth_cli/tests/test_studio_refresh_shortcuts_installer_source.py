@@ -51,22 +51,24 @@ def _posix(monkeypatch, tmp_path):
 # ── where the installer comes from ─────────────────────────────────────────────────
 
 
-def test_the_installer_is_fetched_from_unsloth_ai():
+def test_the_installer_is_fetched_from_the_maintained_fork():
     studio = _studio()
-    assert studio._INSTALLER_URL_BASH == "https://unsloth.ai/install.sh"
-    assert studio._INSTALLER_URL_PWSH == "https://unsloth.ai/install.ps1"
+    assert studio._INSTALLER_URL_BASH == "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh"
+    assert studio._INSTALLER_URL_PWSH == "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1"
 
 
 def test_the_redirect_chain_is_allowed_and_nothing_else():
-    """unsloth.ai 301s to raw.githubusercontent, so both are in the chain."""
+    """Repair must not redirect back to an upstream installer with older pins."""
     studio = _studio()
     for good in (
-        "https://unsloth.ai/install.sh",
-        "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
+        "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.sh",
+        "https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1",
     ):
         assert studio._is_allowed_installer_url(good), good
     for bad in (
         "https://evil.example/install.sh",
+        "https://unsloth.ai/install.sh",
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
         "http://unsloth.ai/install.sh",
         "https://unsloth.ai.evil.example/install.sh",
     ):

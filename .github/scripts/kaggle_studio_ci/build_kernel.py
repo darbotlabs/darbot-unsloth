@@ -606,7 +606,7 @@ def main() -> int:
     ap.add_argument("--payload-dir", required = True)
     ap.add_argument("--out", required = True)
     ap.add_argument("--unsloth-ref", default = "main")
-    ap.add_argument("--repo-url", default = "https://github.com/unslothai/unsloth.git")
+    ap.add_argument("--repo-url", default = "https://github.com/darbotlabs/darbot-unsloth.git")
     ap.add_argument("--payload-args", default = "", help = "extra args for run_studio_gpu.py")
     ap.add_argument("--per-run-timeout", type = int, default = 3900)
     args = ap.parse_args()

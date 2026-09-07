@@ -1,37 +1,20 @@
 # syntax=docker/dockerfile:1.7
 # -----------------------------------------------------------------------------
-# Unsloth + unsloth-zoo for every current NVIDIA arch (Turing -> Blackwell),
-# on linux/amd64 and linux/arm64.
-#
-# Why it works:
-#   * cu128 wheels ship native SASS (no PTX), verified via `cuobjdump --list-elf`:
-#       amd64:  sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120
-#       arm64:  sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a
-#   * SASS is forward-compatible within a major: sm_86->sm_89 (Ada),
-#     sm_100->sm_103 (B300/GB300), sm_120->sm_121 (DGX Spark/GB10), so every
-#     non-Jetson GPU on https://developer.nvidia.com/cuda/gpus runs precompiled
-#     SASS (torch, llama.cpp, source-built ops).
-#   * Triton kernels JIT per-device at first run; the bundled cu12.8 ptxas/NVRTC
-#     cannot emit compute_103/compute_121, so the cu13 override below handles
-#     amd64 sm_103 and arm64 sm_121 (SASS still runs there via forward-compat, so
-#     only JIT-heavy paths need it).
-#   * Rare source builds compile against
-#     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"; the host GPU is
-#     irrelevant, nvcc emits whatever the arch list says.
-#
-# Cross-arch build (arm64 / sm_121): built via QEMU binfmt on an x86_64 host
-#   (`docker run --privileged --rm tonistiigi/binfmt --install all` once, then
-#   `docker buildx build --platform linux/arm64 ...`). QEMU is build-time only;
-#   the image runs natively on aarch64. xformers has no cu128 aarch64 wheel, so
-#   arm64 falls back to Unsloth's SDPA (~5-10% slower, functionally complete).
+# darbotlabs/darbot-unsloth: standard CPython 3.14.7, Torch 2.14 cu130,
+# Triton 3.8. Both Linux architectures resolve the same supported stack.
+# Wheel availability is checked by the build; GPU runtime support must still
+# be tested on the deployment hardware. Windows T1000/sm75 tiny-Llama FP32 LoRA
+# and packed 4-bit QLoRA passed; that does not qualify this Linux image or all models.
+# xformers and vLLM are not enabled by default: an older compiled extension
+# must not force a Torch downgrade. vLLM is an explicit stable-only opt-in.
 #
 # Build host needs Docker buildkit + buildx, and QEMU binfmt for arm64-on-x86_64;
 # nvidia-container-toolkit only for test-time `--gpus all`. No GPU at build time.
 # -----------------------------------------------------------------------------
 
-ARG CUDA_VERSION=12.8.1
+ARG CUDA_VERSION=13.0.0
 ARG UBUNTU_VERSION=24.04
-ARG PYTHON_VERSION=3.12
+ARG PYTHON_VERSION=3.14.7
 
 # Stage 1: builder -- toolkit + dev headers, builds any source extensions.
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
@@ -40,6 +23,8 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
 # wheels available for the platform (xformers aarch64 gap -- see header).
 ARG TARGETARCH
 ARG PYTHON_VERSION
+COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /usr/local/bin/
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -49,9 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     #   sm_75 Turing (T4, RTX 20xx) | sm_80 A100/A30 | sm_86 A40/RTX 30xx
     #   sm_89 Ada (L4/L40/RTX 40xx) | sm_90 Hopper (H100/H200/GH200)
     #   sm_100 Blackwell DC (B100/B200/GB200) | sm_120 Blackwell (RTX 50xx, RTX PRO 6000)
-    # sm_103 (B300/GB300) and sm_121 (GB10) omitted: CUDA 12.8 nvcc can't compile
-    # them; sm_100/sm_120 SASS covers them via forward-compat. +PTX lets future
-    # revisions JIT. Same list on both arches.
+    # +PTX allows forward-compatible JIT; this is not a training support claim.
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX" \
     MAX_JOBS=4 \
     CUDA_HOME=/usr/local/cuda \
@@ -69,70 +52,55 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl git build-essential \
         ninja-build cmake pkg-config \
-    && for i in 1 2 3 4 5; do add-apt-repository -y ppa:deadsnakes/ppa && break; \
-         [ "$i" = 5 ] && exit 1; echo "add-apt-repository failed (attempt $i), retrying in 30s"; sleep 30; done \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
-    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
-    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Isolated prefix; never touch the system Python (PEP 668 externally-managed).
 # The venv bootstraps pip via ensurepip and gets uv a few lines below.
 ENV VENV=/opt/unsloth-venv
-RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
+RUN uv python install "${PYTHON_VERSION}" \
+ && uv venv --python "${PYTHON_VERSION}" --seed "${VENV}" \
+ && ${VENV}/bin/python -c 'import sys, sysconfig; assert sys.implementation.name == "cpython" and (3, 14, 7) <= sys.version_info[:3] < (3, 15) and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), "standard CPython >=3.14.7,<3.15 required"'
 
-# Unified install: torch + triton + bitsandbytes + unsloth + unsloth_zoo in a
-# SINGLE uv pass. Mandatory -- splitting it lets bnb's transitive `cuda-toolkit`
-# silently upgrade torch to 2.12.0+cu130, breaking the pinned cu128 xformers wheel.
-#
-# Flags:
-#   --index-strategy unsafe-best-match: the PyTorch index serves an old
-#     requests==2.28.1 conflicting with datasets>=2.32.2; both indexes are equally
-#     trusted, so override uv's first-wins.
-#   --extra-index-url .../cu128: torch +cu128 wheels + the xformers/cu128 URLs.
-#
-# Plain `huggingface` extra + explicit xformers pin (amd64): the cu128 extras on
-# main stop at torch2100, conflicting with the torch 2.11.0 held below. Pinning
-# xformers==0.0.35 (untied to torch) keeps this self-contained; arm64 stays
-# xformers-less (no cu128 aarch64 wheel).
-#
-# No flash-attn: FA3 is hard-refused on Blackwell (Dao-AILab/flash-attention#1810);
-# FA2 has no cu128+torch2.11+cp312 wheel and Unsloth falls back to xformers/SDPA.
-# Ampere/Ada/Hopper users can `pip install flash-attn` at deploy time.
+# Supply the maintained companion to the same resolver transaction as local Core.
+# Published Zoo excludes this stack; do not bypass its caps with resolver overrides.
+# No flash-attn/xformers is assumed compatible merely because it installs.
 ARG UNSLOTH_REF=main
-ARG UNSLOTH_ZOO_REF=main
+ARG UNSLOTH_REPOSITORY=https://github.com/darbotlabs/darbot-unsloth
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64) UNSLOTH_EXTRA="huggingface"; XFORMERS_PIN="xformers==0.0.35" ;; \
+        amd64) UNSLOTH_EXTRA="huggingface"; XFORMERS_PIN="" ;; \
         arm64) UNSLOTH_EXTRA="huggingface"; XFORMERS_PIN="" ;; \
         *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
  && echo ">> TARGETARCH=${TARGETARCH:-amd64}, unsloth extra=[${UNSLOTH_EXTRA}], xformers=[${XFORMERS_PIN}]" \
- && ${VENV}/bin/pip install uv \
+ && ${VENV}/bin/pip install "uv==0.12.10" \
+ && git init -q /opt/unsloth-src \
+ && cd /opt/unsloth-src \
+ && git remote add origin "${UNSLOTH_REPOSITORY}" \
+ && git fetch -q --depth 1 origin "${UNSLOTH_REF}" \
+ && git checkout -q FETCH_HEAD \
+ && ZOO_SOURCE="$(${VENV}/bin/python /opt/unsloth-src/studio/install_zoo.py \
+        --python ${VENV}/bin/python --print-source)" \
  && ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \
-        --extra-index-url https://download.pytorch.org/whl/cu128 \
-        "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0" \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        "torch==2.14.0+cu130" "torchvision==0.29.0" "torchaudio==2.11.0" \
         ${XFORMERS_PIN} \
-        "triton>=3.6.0" \
+        "triton==3.8.0" "datasets==5.0.1" "scikit-learn==1.9.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
-        "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
-        "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
+        "${ZOO_SOURCE}" \
+        "/opt/unsloth-src[${UNSLOTH_EXTRA}]" \
         `# structlog is a studio backend dep, not an unsloth[huggingface] dep,` \
         `# but unsloth_cli's train / export / chat / list-checkpoints all import` \
         `# studio.backend.core.*, so without it every one of them dies on` \
         `# ModuleNotFoundError. The last builder stage imports it as a guard.` \
-        "timm>=1.0.11" "addict" "structlog"
+        "timm>=1.0.11" "addict" "structlog" "fastapi==0.141.1"
 
-# vLLM: required by Unsloth's GRPO path (fast_inference=True). A SECOND uv pass so
-# torch 2.11.0 settles first; with torch held, uv picks the newest compatible vLLM
-# (0.20+ pins torch 2.11.0). PyPI ships x86_64 + aarch64 wheels since 0.17. amd64
-# failures abort, arm64 is fail-soft (aarch64 kernels validated on Spark, not CI).
+# vLLM is optional and resolves only stable releases with Torch 2.14 held.
+# GRPO's fast_inference=True path is unavailable unless this opt-in succeeds.
 # https://docs.vllm.ai/en/latest/getting_started/installation/gpu/
-# https://wheels.vllm.ai/nightly
-ARG INSTALL_VLLM=auto
+ARG INSTALL_VLLM=0
 RUN set -eux \
  && WANT_VLLM=0 \
  && case "${INSTALL_VLLM}" in \
@@ -144,25 +112,16 @@ RUN set -eux \
         echo ">> installing vLLM (TARGETARCH=${TARGETARCH:-amd64})"; \
         # Explicit && chain, not `set -e` -- POSIX shells disable errexit inside a
         # condition context (verified on dash), masking install failures.
-        # 1: uv resolves vLLM's deps with torch==2.11.0 held (fails loudly if none).
-        # 2: vLLM pulls numpy down to 2.2.6 with a broken numpy.testing that breaks
-        #    `import unsloth`; upgrade numpy back to a self-consistent release.
-        # 3: vLLM pins numba 0.61.2 (refuses numpy>=2.3); lift numba to one
-        #    supporting numpy 2.4 (0.65 imports cleanly, vllm still imports).
+        # Resolve together; never repair an incompatible dependency graph with
+        # post-install upgrades that violate an engine's declared caps.
         { ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
-            --pre \
             --index-strategy unsafe-best-match \
-            --extra-index-url https://wheels.vllm.ai/nightly \
-            --extra-index-url https://download.pytorch.org/whl/cu128 \
-            "torch==2.11.0" \
-            vllm \
-       && ${VENV}/bin/uv pip install \
-            --python ${VENV}/bin/python \
-            --upgrade "numpy>=2.4" \
-       && ${VENV}/bin/uv pip install \
-            --python ${VENV}/bin/python \
-            --upgrade "numba>=0.62" \
+            --extra-index-url https://download.pytorch.org/whl/cu130 \
+            "torch==2.14.0+cu130" "triton==3.8.0" \
+            "torchvision==0.29.0" "torchaudio==2.11.0" \
+            "datasets==5.0.1" "scikit-learn==1.9.0" "transformers==5.16.1" \
+            "vllm>=0.28.0" \
        && ${VENV}/bin/python -c "import vllm; print('vllm', vllm.__version__)" \
        && ${VENV}/bin/python -c "import numpy.testing, numpy; print('numpy', numpy.__version__, 'testing ok')" \
        && ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')" \
@@ -176,47 +135,38 @@ RUN set -eux \
        && echo ">> flashinfer-python ${FI_VER}, matching flashinfer-jit-cache" \
        && { ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
-            --index-url https://flashinfer.ai/whl/cu128 \
+            --index-url https://flashinfer.ai/whl/cu130 \
             "flashinfer-jit-cache==${FI_VER}" \
          || echo ">> flashinfer-jit-cache ${FI_VER} unavailable for ${TARGETARCH:-amd64}; vllm serve may require nvcc for uncached ops"; } \
         # Whatever happened above, flashinfer has to import: a version mismatch
         # here is silent until the first vLLM engine start.
        && ${VENV}/bin/python -c \
             "import flashinfer; print('OK: flashinfer', flashinfer.__version__, 'imports')" \
-       && echo ">> vLLM installed (numpy + numba re-upgraded post-vllm)"; \
+       && ${VENV}/bin/uv pip check --python ${VENV}/bin/python \
+       && echo ">> vLLM installed with a consistent dependency graph"; \
         } || { \
-            if [ "${TARGETARCH:-amd64}" != "amd64" ]; then \
-                echo ">> vLLM skipped on ${TARGETARCH}: install or import check failed (fail-soft on non-amd64)"; \
-                # A partial install must not poison the base stack: drop vllm and
-                # restore the numpy/numba floor it may have moved. arm64 staging CI
-                # re-verifies `import unsloth` after this.
-                ${VENV}/bin/uv pip uninstall --python ${VENV}/bin/python vllm || true; \
-                ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
-                    --upgrade "numpy>=2.4" "numba>=0.62"; \
-                ${VENV}/bin/python -c "import numpy.testing, numba; print('numpy/numba restored')"; \
-            else \
-                echo "ERROR: vLLM install failed on amd64" >&2; exit 1; \
-            fi; \
+            echo "ERROR: no validated stable vLLM stack for the fixed Torch 2.14 policy (${TARGETARCH:-amd64})." >&2; \
+            exit 1; \
         }; \
     else \
         echo ">> vLLM skipped (INSTALL_VLLM=${INSTALL_VLLM}, TARGETARCH=${TARGETARCH:-amd64})"; \
     fi
 
 # JupyterLab so the image runs unslothai/notebooks out of the box:
-#   docker run --gpus all -p 8888:8888 unsloth/unsloth \
+#   docker run --gpus all -p 8888:8888 darbot-unsloth:core \
 #       jupyter lab --ip 0.0.0.0 --port 8888 --allow-root --no-browser
 # Separate pass AFTER the torch pin: pure-Python, never names torch, so uv can't
-# disturb the cu128 pin set. Declared by notebook install cells, so bake them:
+# disturb the cu130 pin set. Declared by notebook install cells, so bake them:
 #   matplotlib   plotting; some trust_remote_code files import it (DeepSeek-OCR)
 #   soundfile    TTS audio read/write (bundles libsndfile)
 #   evaluate+jiwer  Whisper WER metric
 #   tensorboard  default TrainingArguments report_to backend
 #   langid       DeepSeek-R1 GRPO reward language-id check
 #   easydict     some vision trust_remote_code modeling files
-#   protobuf     slow->fast tokenizer conversion for sentencepiece
+#   protobuf     inherited from Core's Python-only 4.25.9 wheel for CPython 3.14
 #   omegaconf    TTS + NeMo-Gym RL notebook configs
 #   einx         TTS codec tensor-rearrange (Llasa/Oute/Spark)
-#   librosa      Whisper audio features (pulls numba, already pinned >=0.65)
+#   librosa      Whisper audio features; Numba 0.67 accepts NumPy 2.5.3
 #   ftfy         Oute TTS text normalisation
 # decord is separate below (no aarch64 wheel). Pinned (==) for reproducible
 # rebuilds. The resolve must NOT move torch/numpy/numba (asserted below).
@@ -224,9 +174,11 @@ RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
-        "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
-        "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
- && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.11.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
+        "langid==1.1.6" "easydict==1.13" \
+        "omegaconf==2.3.1" "einx==0.4.3" "librosa==1.0.0" "ftfy==6.3.1" \
+        "numpy==2.5.3" "numba==0.67.0" \
+ && ${VENV}/bin/python -c "import torch, numpy, numba; from importlib.metadata import version; from google.protobuf.internal import api_implementation; assert torch.__version__.startswith('2.14.0+cu130'), torch.__version__; assert numpy.__version__ == '2.5.3', numpy.__version__; assert numba.__version__ == '0.67.0', numba.__version__; assert version('protobuf') == '4.25.9'; assert api_implementation.Type() == 'python'; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)" \
+ && ${VENV}/bin/uv pip check --python ${VENV}/bin/python
 
 # decord (ERNIE-VL video decode) has wheels only for x86_64. Installed alone:
 # HARD on amd64 (a missing wheel is a real regression), fail-soft elsewhere.
@@ -237,33 +189,30 @@ RUN if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
         || echo ">> decord skipped (no matching wheel for ${TARGETARCH:-}); ERNIE-VL video decode unavailable"; \
     fi
 
-# Audio decode out of the box (torchcodec). Three traps: (1) torchcodec 0.11 must
-# pair with torch 2.11; (2) the wheel must come from cu128, not the PyPI cu13
+# Audio decode (torchcodec). The 0.16 wheel must pair with Torch 2.14 and come
+# from the cu130 index, matching the rest of the stack rather than a different
 # default; (3) its libs dlopen venv torch/NVIDIA libs registered via ld.so.conf.d
 # in the runtime stage. Fail-soft on arches without a matching wheel.
 RUN set -eux \
  && { ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        --index-url https://download.pytorch.org/whl/cu128 \
-        "torchcodec==0.11.0" \
-   && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp-cu12; } \
+        --index-url https://download.pytorch.org/whl/cu130 \
+        "torchcodec==0.16.0" \
+   && ${VENV}/bin/uv pip install --python ${VENV}/bin/python nvidia-npp; } \
  || echo ">> torchcodec bake skipped (no matching wheel for ${TARGETARCH:-amd64})"
 
 # transformers SIDECARS for per-notebook version activation (see
 # unsloth_nb_compat.py). Each sidecar is transformers==X + matched
 # huggingface_hub/tokenizers/safetensors, --no-deps into its own --target under
 # ${VENV}/tf-sidecars. Prepending one to sys.path swaps transformers without
-# touching the cu128 base. Candidate versions mirror Studio's tiers (4.57.6 +
-# 5.3.0/5.5.0/5.10.2). Fail-soft per arch/wheel.
+# touching the cu130 base. This fork ships the current stable 5.16.1 tier.
 #
 # Every candidate is then VERIFIED against the baked vLLM and dropped if it does
 # not survive, because vLLM is version-locked to transformers and a sidecar it
 # cannot import does not give the notebook an older transformers -- it gives it
-# an ImportError at `import unsloth`, before the first model cell. Measured on
-# this image (vLLM 0.26.0): 4.57.6 raises "Support for Transformers v4 ... was
-# removed in vLLM v0.24.0" and 5.3.0 raises "cannot import name
-# 'ALLOWED_LAYER_TYPES'", between them breaking 254 of the 433 shipped notebooks,
-# whose transformers pins select exactly those two. 5.5.0 and 5.10.2 pass.
+# an ImportError at `import unsloth`, before the first model cell. Historical
+# vLLM 0.26 rejected Transformers 4.57.6 and 5.3.0; retain the actual import
+# gate instead of assuming the current stable pair is compatible.
 #
 # vllm.transformers_utils.config is the gate because it is the vLLM module that
 # reads the transformers API, it reproduces BOTH failures, and it imports without
@@ -275,7 +224,7 @@ RUN set -eux \
  && if ${VENV}/bin/python -c "import vllm" >/dev/null 2>&1; then HAVE_VLLM=1; else HAVE_VLLM=0; fi \
  && echo ">> sidecar verification: baked vLLM importable=${HAVE_VLLM}" \
  && KEPT="" \
- && for TFV in 4.57.6 5.3.0 5.5.0 5.10.2; do \
+ && for TFV in 5.16.1; do \
         SCRATCH="$(mktemp -d)"; \
         if ! ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
                 --target "$SCRATCH" "transformers==${TFV}" >/dev/null 2>&1; then \
@@ -312,7 +261,7 @@ RUN set -eux \
  && { du -sh ${VENV}/tf-sidecars || true; }
 
 # Informational pin record (NOT byte-reproducible: pip freeze omits wheel hashes
-# and unsloth/vllm --pre float from VCS/nightly).
+# and the source ref or optional stable dependencies may move between builds).
 RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
  && head -50 ${VENV}/requirements.lock.txt
 
@@ -332,7 +281,7 @@ RUN set -eux \
         ! -path "*numpy/ma/tests*" \
         -exec rm -rf {} + \
  && rm -rf /root/.cache/pip /root/.cache/uv \
- && SP=${VENV}/lib/python${PYTHON_VERSION}/site-packages \
+ && SP=${VENV}/lib/python3.14/site-packages \
  && if [ -d "$SP/nvidia/npp/lib" ]; then \
         find "$SP/nvidia/npp/lib" -maxdepth 1 -name 'libnpp*.so.*' \
             ! -name 'libnppicc.so.*' ! -name 'libnppc.so.*' -delete; \
@@ -357,20 +306,17 @@ import torch
 arches = torch._C._cuda_getArchFlags().split()
 print("torch", torch.__version__, "cuda", torch.version.cuda)
 print("arches:", arches)
-assert torch.__version__.startswith("2.11.0"), f"torch silently moved: {torch.__version__}"
-assert "+cu128" in torch.__version__, f"cu build silently changed: {torch.__version__}"
+assert torch.__version__.startswith("2.14.0"), f"torch silently moved: {torch.__version__}"
+assert "+cu130" in torch.__version__, f"cu build silently changed: {torch.__version__}"
 assert "sm_100" in arches, f"sm_100 (B200/GB200) missing: {arches}"
-# cu128 wheels ship sm_120 native SASS on both amd64 and aarch64. On arm64 DGX
-# Spark (sm_121) runs it via forward-compat; sm_121 is never in a cu128 wheel.
+# Verify architecture coverage from the resolved cu130 wheel itself.
 assert "sm_120" in arches, f"sm_120 missing: {arches}"
-print(f"OK: torch 2.11.0+cu128 with sm_100 + sm_120 native SASS intact ({target})")
+print(f"OK: torch 2.14.0+cu130 with sm_100 + sm_120 native SASS intact ({target})")
 
 from importlib.metadata import version, PackageNotFoundError
 # xformers is amd64-only (aarch64 wheel gap -- see header).
 REQUIRED = ["torch", "triton", "bitsandbytes", "unsloth",
             "unsloth_zoo", "transformers", "trl", "peft", "accelerate"]
-if target == "amd64":
-    REQUIRED.insert(2, "xformers")
 missing = []
 for pkg in REQUIRED:
     try:
@@ -385,8 +331,6 @@ print("OK: all required wheels present")
 # Lightweight imports: these init without touching CUDA, unlike unsloth.
 import importlib
 LIGHT_IMPORTS = ["bitsandbytes", "triton"]
-if target == "amd64":
-    LIGHT_IMPORTS.insert(0, "xformers")
 for pkg in LIGHT_IMPORTS:
     importlib.import_module(pkg)
 print(f"OK: {' + '.join(LIGHT_IMPORTS)} import cleanly on no-GPU host")
@@ -417,7 +361,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/.cache/huggingface \
     TRITON_CACHE_DIR=/workspace/.cache/triton \
     # Keep the arch list at runtime so an in-container source build gets the same
-    # SASS coverage as the builder (10.3 omitted; cu12.8 can't emit it).
+    # The runtime must preserve the same SASS coverage as the builder.
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 
 # System packages needed by the notebooks:
@@ -432,55 +376,19 @@ RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
         software-properties-common ca-certificates curl wget git libgomp1 \
         gcc g++ zstd ffmpeg ninja-build \
         "cuda-nvcc-${CUDA_PKG}" "cuda-cudart-dev-${CUDA_PKG}" \
-    && for i in 1 2 3 4 5; do add-apt-repository -y ppa:deadsnakes/ppa && break; \
-         [ "$i" = 5 ] && exit 1; echo "add-apt-repository failed (attempt $i), retrying in 30s"; sleep 30; done \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev \
-    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
-    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
     && test -x /usr/local/cuda/bin/nvcc \
     && rm -rf /var/lib/apt/lists/*
-# gcc + g++ + python3.12-dev in runtime: Triton's nvidia backend compiles a C
+# gcc + g++ + the managed Python headers: Triton's NVIDIA backend compiles a C
 # extension (CudaUtils) on first GPU access; without a compiler + headers the
 # first forward pass dies with "Failed to find C compiler". ~250MB.
 
 COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
+COPY --from=builder /opt/python /opt/python
+COPY --from=builder /opt/unsloth-src /opt/unsloth-src
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
 
-# Blackwell JIT fix for sm_103 (amd64) and sm_121 (arm64) -- the cu12.8 JIT gap.
-# Two JIT paths need the cu13 override:
-#   (1) torch's bundled libnvrtc.so.12 errors on sm_103/sm_121. Fix: stage a cu13
-#       NVRTC alias beside the cu12.8 default.
-#   (2) Triton's bundled ptxas (12.8) rejects sm_103, downgrades sm_121 to sm_80
-#       (triton-lang/triton#8335). Fix: cu13 ptxas via TRITON_PTXAS_PATH.
-# Both cu13 tools are CPU-side compilers, but their cubin needs a >=580 driver to
-# LOAD, so neither is a global default (would break 570-579 drivers).
-# select_cuda_jit_tools in entrypoint.sh activates them per device, only for
-# sm_103/sm_121 (>=580 drivers). Both arches carry the ~400 MB.
-RUN set -eux; \
-        # The base already configures the CUDA apt repo with its own Signed-By
-        # keyring; a second cuda-keyring would make apt-get update refuse the repo.
-        # The base repo serves 13.x too, so install cu13 packages directly.
-        apt-get update; \
-        apt-get install -y --no-install-recommends \
-            cuda-nvrtc-13-0 \
-            cuda-nvcc-13-0; \
-        # cu13's postinst flips /usr/local/cuda to cuda-13.0; pin it back (cpp
-        # builds resolve /usr/local/cuda/bin/nvcc, and cu13 cubins need driver
-        # >= 580 while this image supports 570+). The cu13 tools stay reachable by
-        # absolute path; --set also stops later apt ops flipping it again.
-        update-alternatives --set cuda /usr/local/cuda-12.8; \
-        rm -rf /var/lib/apt/lists/*; \
-        # (1) NVRTC staging: keep the wheel's cu12.8 lib as .cu128.orig, point
-        #     libnvrtc.so.12 at it, stage .cu13 -> the cu13 lib;
-        #     select_cuda_jit_tools retargets the symlink only on sm_103/sm_121.
-        NVRTC_DIR=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_nvrtc/lib; \
-        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ] && [ ! -L "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
-            mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
-            ln -s libnvrtc.so.12.cu128.orig "${NVRTC_DIR}/libnvrtc.so.12"; \
-            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12.cu13"; \
-        fi
-# (2) ptxas: the cu13 nvcc package above provides it; TRITON_PTXAS_PATH is set
-# per device at boot (select_cuda_jit_tools) for the same driver-floor reason.
+# CUDA 13 is native throughout. Never alias a CUDA 13 library to a CUDA 12
+# SONAME: matching filenames do not establish ABI compatibility.
 
 # Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec can
 # dlopen them. ld.so.conf.d, NOT LD_LIBRARY_PATH: the cache is consulted after
@@ -488,7 +396,7 @@ RUN set -eux; \
 # cublas/lib and cu13/lib are here for llama.cpp's libggml-cuda.so, which links
 # against libcublas but does not ship it (see the guard after the fetch below).
 RUN set -eux \
- && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
+ && SP=/opt/unsloth-venv/lib/python3.14/site-packages \
  && printf "%s\n" "$SP/torch/lib" "$SP/nvidia/cuda_nvrtc/lib" \
                   "$SP/nvidia/cuda_runtime/lib" "$SP/nvidia/npp/lib" \
                   "$SP/nvidia/cublas/lib" "$SP/nvidia/cu13/lib" \
@@ -561,6 +469,9 @@ RUN set -eux \
     else \
         echo ">> no libggml-cuda.so in this bundle (CPU-only build)"; \
     fi
+# Verify the completed runtime, including the optional CUDA-library installation.
+RUN /opt/unsloth-venv/bin/uv pip check --python /opt/unsloth-venv/bin/python \
+ && /opt/unsloth-venv/bin/python -c "from importlib.metadata import version; from google.protobuf.internal import api_implementation; assert version('protobuf') == '4.25.9'; assert api_implementation.Type() == 'python'"
 ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
 
 WORKDIR /workspace
@@ -580,7 +491,7 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR} \
 #   * unsloth-run: headless `unsloth-run <notebook|url>`, the robust driven path.
 COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
- && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
+ && SP=/opt/unsloth-venv/lib/python3.14/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
  && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
  && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \

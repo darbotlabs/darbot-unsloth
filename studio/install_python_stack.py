@@ -57,11 +57,9 @@ IS_LINUX = sys.platform.startswith("linux")
 # amd-smi auto-elevates on Windows (UAC/DiskPart); RunAsInvoker keeps probes un-elevated.
 if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
-# torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64 and win_amd64.
+# TorchCodec 0.16 includes CPython 3.14 Linux aarch64 wheels as well as x86_64.
 PLATFORM_LACKS_TORCHCODEC_WHEEL = (
-    (IS_LINUX and platform.machine() in {"aarch64", "arm64"})
-    or (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"})
-    or IS_MAC_INTEL
+    (IS_WINDOWS and platform.machine().lower() in {"arm64", "aarch64"}) or IS_MAC_INTEL
 )
 
 
@@ -183,21 +181,21 @@ _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     # Floored at 2.11 (the _grouped_mm bug), matching install.sh's rocm7.2|gfx* case.
     "rocm7.2": (
-        "torch>=2.11.0,<2.12.0",
-        "torchvision>=0.26.0,<0.27.0",
-        "torchaudio>=2.11.0,<2.12.0",
+        "torch==2.14.0",
+        "torchvision==0.29.0",
+        "torchaudio==2.11.0",
     ),
     # rocm7.1 also serves 2.11, so a <2.11 cap would force-reinstall 2.10 over it.
     "rocm7.1": (
-        "torch>=2.4,<2.12.0",
-        "torchvision>=0.19,<0.27.0",
-        "torchaudio>=2.4,<2.12.0",
+        "torch==2.14.0",
+        "torchvision==0.29.0",
+        "torchaudio==2.11.0",
     ),
     # rocm7.0 and earlier top out below 2.11, so the ceiling stays literal.
     "_default": (
-        "torch>=2.4,<2.11.0",
-        "torchvision>=0.19,<0.26.0",
-        "torchaudio>=2.4,<2.11.0",
+        "torch==2.14.0",
+        "torchvision==0.29.0",
+        "torchaudio==2.11.0",
     ),
 }
 # Windows AMD per-arch pins for repo.amd.com, stopping an ABI-mismatched companion.
@@ -210,9 +208,9 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
 }
 # Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
 _ROCM_ARCH_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.12.0",
-    "torchvision>=0.19,<0.27.0",
-    "torchaudio>=2.4,<2.12.0",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+    "torchaudio==2.11.0",
 )
 
 _PYTORCH_WHL_BASE = (
@@ -279,9 +277,9 @@ def _torch_index_leaf(url: str) -> str:
 
 # CUDA repair specs (see _ensure_cuda_torch); companions pinned against an ABI mismatch.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.12.0",
-    "torchvision>=0.19,<0.27.0",
-    "torchaudio>=2.4,<2.12.0",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+    "torchaudio==2.11.0",
 )
 
 # CPU repair specs (see _ensure_cpu_torch); the /cpu index also serves newer torch.
@@ -290,9 +288,9 @@ _CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
 # Byte-identical to the non-XPU arm of install.ps1's $_fix*Spec scalars, NOT _CUDA_TORCH_PKG_SPEC:
 # `studio update` must repair to the same wheels install.ps1 does.
 _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.12.0",
-    "torchvision>=0.19,<0.27.0",
-    "torchaudio>=2.4,<2.12.0",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+    "torchaudio==2.11.0",
 )
 
 # torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
@@ -305,7 +303,7 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
 #                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
 #   2.11.x           -> 0.17.0 (reachable via CUDA or ROCm rocm7.2)
 # Unknown/older torch keeps the conservative default.
-_TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_DEFAULT_SPEC = "torchao==0.18.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_211_PLUS_SPEC = "torchao==0.17.0"
@@ -342,6 +340,9 @@ def _select_torchao_spec(torch_version: str | None) -> str:
         return _TORCHAO_DEFAULT_SPEC
     if major != 2:
         return _TORCHAO_DEFAULT_SPEC
+    if minor >= 14:
+        # 0.18 is a py3-none-any wheel; no mismatched CUDA/C++ extension is loaded.
+        return "torchao==0.18.0"
     if minor >= 11:
         return _TORCHAO_TORCH_211_PLUS_SPEC  # newest known build; covers 2.11+
     if minor == 10:
@@ -532,6 +533,54 @@ def _repair_bad_anyio() -> None:
         "--force-reinstall",
         "anyio<4.14.0",
         constrain = False,
+    )
+
+
+def _repair_incompatible_protobuf_wheel() -> None:
+    """pip otherwise keeps protobuf 4.25.9's CPython-3.14-incompatible ABI3 wheel."""
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        installed = distribution("protobuf")
+    except PackageNotFoundError:
+        return
+    if installed.version != "4.25.9":
+        return
+    if "Tag: py3-none-any" in (installed.read_text("WHEEL") or "").splitlines():
+        return
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    if CONSTRAINTS.is_file():
+        for line in CONSTRAINTS.read_text(encoding = "utf-8").splitlines():
+            text = re.split(r"\s+#", line, maxsplit = 1)[0].strip()
+            if not text or text.startswith(("#", "-")):
+                continue
+            try:
+                requirement = Requirement(text)
+            except InvalidRequirement:
+                continue
+            if requirement.name.lower() != "protobuf" or not requirement.url:
+                continue
+            if not re.search(
+                r"/protobuf-4\.25\.9-py3-none-any\.whl#sha256=[0-9a-f]{64}$",
+                requirement.url,
+                re.IGNORECASE,
+            ):
+                break
+            pip_install(
+                "Replacing incompatible protobuf native wheel",
+                "--force-reinstall",
+                requirement.url,
+            )
+            repaired = distribution("protobuf")
+            if repaired.version != "4.25.9" or "Tag: py3-none-any" not in (
+                repaired.read_text("WHEEL") or ""
+            ).splitlines():
+                raise RuntimeError("protobuf repair did not install the required pure-Python wheel.")
+            return
+    raise RuntimeError(
+        "protobuf 4.25.9's native ABI3 wheel is incompatible with CPython 3.14. "
+        "Restore the maintained checksum-pinned pure-Python wheel constraint before continuing."
     )
 
 
@@ -2685,24 +2734,12 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
 
 
 def _detect_cuda_torch_index_url() -> str:
-    """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
-
-    Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update` repairs
-    to the same wheel family a fresh install would pick. Honours the explicit
-    overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
-    never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable. The
-    driver version is only an upper bound, so the GPU architectures can cap the
-    result at cu126 (see _cap_cuda_family_for_pre_turing).
-    """
-    _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
-    if _override_url:
-        return _trim_index_path_slashes(_override_url)
-    _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
-    if _override_family:
-        return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
+    """Select the maintained CUDA 13 profile without aliasing an explicit pin."""
+    explicit = _explicit_torch_index_url()
+    if explicit:
+        return explicit
     exe = _nvidia_smi_path()
-    tag = "cu126"  # default when the driver CUDA version cannot be read
+    driver_major = None
     if exe:
         try:
             result = subprocess.run(
@@ -2717,23 +2754,27 @@ def _detect_cuda_torch_index_url() -> str:
             if result.returncode == 0:
                 m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
-                    major, minor = int(m.group(1)), int(m.group(2))
-                    if major >= 13:
-                        tag = "cu130"
-                    elif major == 12 and minor >= 8:
-                        tag = "cu128"
-                    elif major == 12 and minor >= 6:
-                        tag = "cu126"
-                    elif major >= 12:
-                        tag = "cu124"
-                    elif major >= 11:
-                        tag = "cu118"
-                    else:
-                        tag = "cpu"  # ancient driver: no usable CUDA wheels
+                    driver_major = int(m.group(1))
         except Exception:
             pass
-        tag = _cap_cuda_family_for_pre_turing(tag, exe)
-    return f"{_PYTORCH_WHL_BASE}/{tag}"
+    if driver_major is not None and driver_major < 13:
+        raise RuntimeError(
+            "The maintained Torch 2.14 CUDA profile requires a CUDA 13-capable NVIDIA "
+            "driver. Upgrade the driver, or explicitly select UNSLOTH_TORCH_INDEX_FAMILY=cpu."
+        )
+    return f"{_PYTORCH_WHL_BASE}/cu130"
+
+
+def _validate_maintained_torch_index(url: str) -> str:
+    leaf = _torch_index_leaf(url)
+    if re.fullmatch(r"(?:cu\d+|rocm\d+\.\d+|gfx[0-9a-f]+)", leaf) and leaf not in (
+        "cu130", "rocm7.2",
+    ):
+        raise ValueError(
+            f"Unsupported Torch 2.14 index family {leaf!r}; maintained profiles are "
+            "cu130, cpu, xpu, and rocm7.2. Explicit index pins are never silently aliased."
+        )
+    return url
 
 
 def _explicit_torch_index_url() -> "str | None":
@@ -2744,10 +2785,10 @@ def _explicit_torch_index_url() -> "str | None":
     """
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
-        return _trim_index_path_slashes(url)
+        return _validate_maintained_torch_index(_trim_index_path_slashes(url))
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if family:
-        return f"{_PYTORCH_WHL_BASE}/{family.strip('/')}"
+        return _validate_maintained_torch_index(f"{_PYTORCH_WHL_BASE}/{family.strip('/')}")
     return None
 
 
@@ -2856,9 +2897,9 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
 # ceiling, and the floor is 2.6 because unsloth/models/_utils.py raises at import for an XPU
 # device below it. Kept in step with install.sh by tests/sh/test_xpu_torch_spec_parity.sh.
 _XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.6,<2.11.0",
-    "torchvision>=0.21,<0.26.0",
-    "torchaudio>=2.6,<2.11.0",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+    "torchaudio==2.11.0",
 )
 
 
@@ -3104,7 +3145,7 @@ def _ensure_xpu_torch() -> None:
         _ver = _version.lower()
         _rel = _ver.split("+")[0].split(".")
         _n = tuple(int(x) for x in _rel[:2] if x.isdigit())
-        if "+xpu" in _ver and len(_n) == 2 and (2, 6) <= _n < (2, 11):
+        if "+xpu" in _ver and len(_n) == 2 and (2, 14) <= _n < (2, 15):
             return  # already the pinned family, in the supported range
         _why = "torch is not a supported XPU build"
     else:
@@ -3166,7 +3207,7 @@ def _xpu_wheel_supported_on_disk() -> bool:
     if "+xpu" not in label:
         return False
     nums = tuple(int(p) for p in label.split("+")[0].split(".")[:2] if p.isdigit())
-    return len(nums) == 2 and (2, 6) <= nums < (2, 11)
+    return len(nums) == 2 and (2, 14) <= nums < (2, 15)
 
 
 def _ensure_venv_pip() -> bool:
@@ -3208,31 +3249,49 @@ def _ensure_venv_pip() -> bool:
 
 
 def _ensure_xpu_triton() -> None:
-    """Replace generic Triton with the XPU build torch asks for.
+    _ensure_backend_triton("xpu")
 
-    Generic `triton` and torch's `pytorch-triton-xpu` / `triton-xpu` both own the top-level
-    `triton` package, and resolving unsloth against a pinned +xpu torch pulls BOTH (uv reports
-    pytorch-triton-xpu 3.5.0 alongside triton 3.7.1), so the CUDA-oriented build can land last
-    and torch.compile then loads the wrong library on an Intel GPU.
 
-    Lives here, not in install.sh, because install.sh runs setup.sh which runs this file: one
-    copy covers the fresh install AND `unsloth studio update`, which never touches install.sh.
+def _ensure_rocm_triton() -> None:
+    _ensure_backend_triton("rocm")
 
-    On Windows setup.ps1 performs the same swap after this script exits, so its handover
-    variable means "someone else will"; a direct run has no such postlude.
-    """
-    if NO_TORCH or IS_MACOS:
+
+def _ensure_cuda_triton() -> None:
+    _ensure_backend_triton("cuda")
+
+
+_TRITON_PROVIDERS = (
+    "triton", "triton-windows", "triton-rocm", "triton-xpu",
+    "pytorch-triton", "pytorch-triton-rocm", "pytorch-triton-xpu",
+)
+
+
+def _ensure_backend_triton(backend: str) -> None:
+    """Keep one provider of the shared ``triton`` namespace for the selected backend."""
+    if NO_TORCH or IS_MACOS or (backend == "rocm" and IS_WINDOWS):
         return
-    if IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
-        return
-    pin = _explicit_xpu_torch_index_url()
+    if backend == "xpu":
+        pin = _explicit_xpu_torch_index_url()
+        suffix, family, label = "+xpu", "xpu", "Intel XPU"
+        default_spec = "triton-xpu==3.8.0"
+        accepted_providers = ("triton-xpu", "pytorch-triton-xpu")
+    elif backend == "rocm":
+        pin = _explicit_rocm_torch_index_url()
+        suffix, family, label = "+rocm", "rocm7.2", "AMD ROCm"
+        default_spec = "triton-rocm==3.8.0"
+        accepted_providers = ("triton-rocm",)
+    else:
+        pin = _explicit_cuda_torch_index_url()
+        suffix, family, label = "+cu", "cu130", "NVIDIA CUDA"
+        default_spec = "triton-windows>=3.8.0,<3.9" if IS_WINDOWS else "triton==3.8.0"
+        accepted_providers = ("triton-windows",) if IS_WINDOWS else ("triton",)
     if pin is None:
-        # A one-shot pin (UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh) is gone by the next plain
-        # update, but its +xpu wheel is not and a dependency pass can pull generic triton back
-        # in, so the INSTALLED wheel is the pin. setup.sh keys its bnb floor on the same signal.
-        if "+xpu" not in _installed_torch_version_label().lower():
+        explicit = _explicit_torch_index_url()
+        if explicit and _torch_index_leaf(explicit) in ("cpu", "xpu", "cu130", "rocm7.2"):
             return
-        pin = f"{_PYTORCH_WHL_BASE}/xpu"
+        if suffix not in _installed_torch_version_label().lower():
+            return
+        pin = f"{_PYTORCH_WHL_BASE}/{family}"
 
     try:
         probe = subprocess.run(
@@ -3240,15 +3299,34 @@ def _ensure_xpu_triton() -> None:
                 sys.executable,
                 "-c",
                 (
-                    "import importlib.metadata as m\n"
+                    "import importlib.metadata as m,re\n"
                     "try:\n"
                     "    reqs = m.requires('torch') or []\n"
                     "except Exception:\n"
                     "    reqs = []\n"
-                    "print('SPEC=' + next((r.split(';')[0].strip() "
-                    "for r in reqs if 'triton' in r.lower()), ''))\n"
-                    "print('GENERIC=' + next((d.version for d in m.distributions() "
-                    "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton'), ''))\n"
+                    "name = lambda r: re.split(r'[<>=!~\\s\\[]', r, maxsplit=1)[0].lower().replace('_','-')\n"
+                    "spec = next((r.split(';')[0].strip() for r in reqs "
+                    f"if name(r) in {accepted_providers!r}), '')\n"
+                    f"wanted = name(spec or {default_spec!r})\n"
+                    "conflicts = [(name(d.metadata['Name'] or ''), d.version) "
+                    f"for d in m.distributions() if name(d.metadata['Name'] or '') in {_TRITON_PROVIDERS!r} "
+                    "and name(d.metadata['Name'] or '') != wanted]\n"
+                    "print('SPEC=' + spec)\n"
+                    "print('GENERIC=' + (str(conflicts[0][1]) if conflicts else ''))\n"
+                    "print('CONFLICTS=' + ','.join(n for n,v in conflicts))\n"
+                    "cuda_only = []\n"
+                    f"if {backend in ('xpu', 'rocm') and not IS_WINDOWS!r}:\n"
+                    "    from packaging.requirements import Requirement\n"
+                    "    try:\n"
+                    "        cce_requires = m.requires('cut-cross-entropy') or []\n"
+                    "    except m.PackageNotFoundError:\n"
+                    "        cce_requires = []\n"
+                    "    for raw in cce_requires:\n"
+                    "        req = Requirement(raw)\n"
+                    "        if name(req.name) == 'triton' and (req.marker is None or req.marker.evaluate()):\n"
+                    "            cuda_only.append('cut-cross-entropy')\n"
+                    "            break\n"
+                    "print('CUDA_ONLY=' + ','.join(cuda_only))\n"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -3256,32 +3334,57 @@ def _ensure_xpu_triton() -> None:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
+        raise RuntimeError(f"Could not inspect the {label} Triton namespace") from None
     if probe.returncode != 0:
-        return
-    out = probe.stdout.decode(errors = "replace")
+        raise RuntimeError(f"Could not inspect the {label} Triton namespace")
+    out = probe.stdout.decode(errors = "replace") if isinstance(probe.stdout, bytes) else probe.stdout
     spec = next((ln[5:].strip() for ln in out.splitlines() if ln.startswith("SPEC=")), "")
     generic = next((ln[8:].strip() for ln in out.splitlines() if ln.startswith("GENERIC=")), "")
-    # Act only when generic triton is present AND torch asks for an XPU triton; anything else
-    # means torch is not the +xpu wheel this assumes.
-    if not generic or "xpu" not in spec.lower():
+    conflicts_value = next((ln[10:] for ln in out.splitlines() if ln.startswith("CONFLICTS=")), None)
+    conflicts = (
+        [name for name in conflicts_value.split(",") if name in _TRITON_PROVIDERS]
+        if conflicts_value is not None
+        else (["triton", "triton-windows"] if generic else [])
+    )
+    cuda_only = next((ln[10:] for ln in out.splitlines() if ln.startswith("CUDA_ONLY=")), "")
+    removals = conflicts + (
+        ["cut-cross-entropy"]
+        if backend in ("xpu", "rocm") and not IS_WINDOWS and cuda_only == "cut-cross-entropy"
+        else []
+    )
+    current_torch = re.match(r"^2\.14\.0(?:\+|$)", _installed_torch_version_label())
+    if not spec and current_torch:
+        spec = default_spec
+    if backend == "rocm" and current_torch:
+        spec = default_spec
+    provider = re.split(r"[<>=!~\s\[]", spec, maxsplit = 1)[0].lower().replace("_", "-")
+    if provider not in accepted_providers:
+        return
+    index_args = [] if backend == "cuda" and IS_WINDOWS else ["--index-url", pin]
+    if not removals:
+        if not _exact_distribution_spec_is_installed(spec):
+            pip_install(
+                f"triton ({label})",
+                "--no-deps", spec, *index_args, constrain = False,
+            )
         return
 
-    _safe_print(f"   replacing triton {generic} with {spec} (Intel XPU)")
-    if not _ensure_venv_pip():
+    _safe_print(f"   replacing incompatible compiler packages {', '.join(removals)} with {spec} ({label})")
+    if "cut-cross-entropy" in removals:
         _safe_print(
-            _red(
-                f"   no pip in the venv to fetch {spec}; generic triton {generic} left in "
-                "place -- it shadows torch XPU triton, so torch.compile will not use the XPU"
-            )
+            "   cut-cross-entropy requires CUDA's generic Triton; removing that optional "
+            "loss accelerator so the selected backend uses its existing loss fallback."
         )
-        return
+    if not _ensure_venv_pip():
+        raise RuntimeError(
+            f"No pip in the venv to fetch {spec}; conflicting Triton providers left in place."
+        )
 
     # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the shared
-    # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
-    # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
+    # paths live in each provider's OWN record, so removing it afterwards deletes the replacement.
+    # Pre-fetching stops a dead mirror stranding the venv between the two
     # steps. uv has no `pip download`, hence pip here.
-    tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
+    tmp = tempfile.mkdtemp(prefix = f"unsloth_triton_{backend}_")
     try:
         _dl_cmd = [
             sys.executable,
@@ -3293,8 +3396,7 @@ def _ensure_xpu_triton() -> None:
             "-d",
             tmp,
             spec,
-            "--index-url",
-            pin,
+            *index_args,
         ]
         try:
             dl = subprocess.run(
@@ -3313,15 +3415,11 @@ def _ensure_xpu_triton() -> None:
         wheels = glob.glob(os.path.join(tmp, "*.whl"))
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
         if dl is None or dl.returncode != 0 or not wheels:
-            _safe_print(
-                _red(
-                    f"   could not fetch {spec}; generic triton {generic} left in place -- "
-                    "it shadows torch XPU triton, so torch.compile will not use the XPU"
-                )
+            raise RuntimeError(
+                f"Could not fetch {spec}; conflicting Triton providers left in place."
             )
-            return
         removed = subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", *removals],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
         )
@@ -3329,19 +3427,15 @@ def _ensure_xpu_triton() -> None:
             # A read-only or locked venv leaves generic triton REGISTERED; installing over it
             # would let a later upgrade or uninstall delete the shared files again. Change
             # nothing.
-            _safe_print(
-                _red(
-                    f"   could not remove generic triton {generic}; leaving it in place -- it "
-                    "shadows torch XPU triton, so torch.compile will not use the XPU"
-                )
+            raise RuntimeError(
+                f"Could not remove conflicting Triton providers for {label}; refusing to overwrite shared files."
             )
-            return
         # Past this point the venv has NO triton: the uninstall took the shared top-level files
         # with it. pip_install, not pip_install_try -- a warning would let the caller write a
         # completion manifest over a venv whose torch.compile is broken, which the next update
         # then fast-paths past (no generic distribution is left to trigger on).
         pip_install(
-            "triton (Intel XPU)",
+            f"triton ({label})",
             "--force-reinstall",
             "--no-deps",
             wheels[0],
@@ -3790,7 +3884,7 @@ def _warn_repair_left_torch_unimportable(expected: str) -> bool:
     )
     _safe_print("   [WARN] The venv is not usable in this state.")
     _safe_print("   [WARN] Re-run this installer, or reinstall the build for your GPU manually.")
-    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    _safe_print("   [WARN]     irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex")
     return False
 
 
@@ -3807,7 +3901,7 @@ def _warn_wrong_flavor(expected: str, installed: str) -> bool:
     )
     _safe_print("   [WARN] The repair did not install the requested build.")
     _safe_print("   [WARN] Re-run this installer, or reinstall the build for your GPU manually.")
-    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    _safe_print("   [WARN]     irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex")
     return False
 
 
@@ -3826,7 +3920,7 @@ def _warn_still_cpu(expected: str) -> bool:
     _safe_print(
         "   [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU."
     )
-    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    _safe_print("   [WARN]     irm https://raw.githubusercontent.com/darbotlabs/darbot-unsloth/main/install.ps1 | iex")
     return False
 
 
@@ -4341,7 +4435,7 @@ def _ensure_rocm_torch() -> None:
                 f"{_strip_index_url_credentials(index_url)}"
             )
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                gfx_arch, ("torch", "torchvision", "torchaudio")
+                gfx_arch, _CUDA_TORCH_PKG_SPEC
             )
             # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists
             # there, so asking for one makes the trio unresolvable.
@@ -4464,7 +4558,7 @@ def _ensure_rocm_torch() -> None:
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
+                _inferred_linux_gfx, _CUDA_TORCH_PKG_SPEC
             )
             _safe_print(
                 f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
@@ -4541,9 +4635,9 @@ def _ensure_rocm_torch() -> None:
                 # the inferred-arch install above and the missing-kernel route below.
                 _arch_index_url = _amd_arch_index_url(_selected_gfx)
                 _arch_index_pkgs = (
-                    "torch>=2.11.0,<2.12.0",
-                    "torchvision>=0.26.0,<0.27.0",
-                    "torchaudio>=2.11.0,<2.12.0",
+                    "torch==2.14.0",
+                    "torchvision==0.29.0",
+                    "torchaudio==2.11.0",
                 )
                 _safe_print(
                     f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
@@ -5326,6 +5420,26 @@ WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
 # Skipped without torch (Intel Mac GGUF-only), plus librosa, whose numba chain fails (#5046).
 NO_TORCH_SKIP_PACKAGES = {
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torchao",
+    "accelerate",
+    "peft",
+    "trl",
+    "sentence-transformers",
+    "descript-audio-codec",
+    "descript-audiotools",
+    "julius",
+    "snac",
+    "bitsandbytes",
+    "xformers",
+    "triton",
+    "triton-windows",
+    "triton-rocm",
+    "triton-xpu",
+    "triton-kernels",
+    "cut-cross-entropy",
     "torch-stoi",
     "timm",
     "torchcodec",
@@ -5333,6 +5447,63 @@ NO_TORCH_SKIP_PACKAGES = {
     "openai-whisper",
     "librosa",
 }
+
+
+def _retire_legacy_no_torch_packages() -> bool:
+    """Remove managed ML packages left dependency-broken by old GGUF-only installs."""
+    if not NO_TORCH:
+        return True
+    from importlib.metadata import PackageNotFoundError, distribution
+    from packaging.requirements import Requirement
+
+    try:
+        distribution("torch")
+        return True  # --no-torch does not remove an existing, working ML stack.
+    except PackageNotFoundError:
+        pass
+
+    dependencies = {}
+    for name in sorted(NO_TORCH_SKIP_PACKAGES | {"unsloth-zoo"}):
+        try:
+            dist = distribution(name)
+        except PackageNotFoundError:
+            continue
+        try:
+            requirements = [Requirement(value) for value in (dist.requires or ())]
+            dependencies[name] = {
+                _canonical_package_name(req.name)
+                for req in requirements
+                if req.marker is None or req.marker.evaluate({"extra": ""})
+            }
+        except Exception as error:
+            _note(
+                f"Cannot safely inspect the legacy {name} dependency record "
+                f"({type(error).__name__}). Repair its metadata before continuing.",
+                _red,
+            )
+            return False
+
+    retired = {"torch", "unsloth-zoo"}
+    while True:
+        expanded = retired | {
+            name for name, requires in dependencies.items() if requires & retired
+        }
+        if expanded == retired:
+            break
+        retired = expanded
+    for name in sorted(retired & dependencies.keys()):
+        _note(f"Removing legacy {name}: deferred in the Torch-free GGUF profile")
+        if not _uninstall_distribution(name):
+            _note(f"Could not remove legacy {name}; refusing to certify this install.", _red)
+            return False
+        try:
+            distribution(name)
+        except PackageNotFoundError:
+            continue
+        _note(f"Legacy {name} metadata remains after removal; rerun the repair.", _red)
+        return False
+    return True
+
 
 # Requirements with NO wheel on PyPI at any version, so the installer has always built
 # them from source. antlr4-python3-runtime arrives transitively: omegaconf==2.3.1 pins it
@@ -5528,9 +5699,14 @@ def _bootstrap_uv() -> bool:
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy, adjacent when writable, with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
-    filtered = [
-        line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
-    ]
+    skipped = {_canonical_package_name(name) for name in skip}
+    filtered = []
+    for line in lines:
+        name = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+        if name is None or not any(
+            _canonical_package_name(name.group(1)).startswith(package) for package in skipped
+        ):
+            filtered.append(line)
     # Beside the source so relative -r/-c includes resolve; a read-only tree
     # (root-owned install, non-root user) falls back rather than aborting.
     kwargs = dict(
@@ -5565,9 +5741,6 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-_UNSLOTH_ZOO_GIT_URL = "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
-
-
 def _unsloth_zoo_ref() -> str:
     """The unsloth-zoo git ref the --local overlay installs.
 
@@ -5585,8 +5758,14 @@ def _unsloth_zoo_git_spec() -> str:
     bare git URL already clones the default branch, so the default install is
     byte for byte the one every caller and the staging path already expect.
     """
-    ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
-    return _UNSLOTH_ZOO_GIT_URL + ("@" + ref if ref else "")
+    if os.environ.get("UNSLOTH_ZOO_REF", "").strip():
+        raise RuntimeError(
+            "UNSLOTH_ZOO_REF is unsupported by the CPython 3.14 fork: "
+            "update the maintained vendored Zoo source instead."
+        )
+    local_repo = os.environ.get("STUDIO_LOCAL_REPO", "").strip()
+    studio_dir = Path(local_repo).resolve() / "studio" if local_repo else SCRIPT_DIR
+    return str(studio_dir / "backend" / "vendor" / "unsloth_zoo_compat")
 
 
 def _overlay_local_core_package(
@@ -5605,23 +5784,33 @@ def _overlay_local_core_package(
     if canonical == "unsloth":
         step_label = f"overlaying local repo (editable): {local_repo}"
         install_label = "Overlaying local repo (editable)"
-        args = ("-e", local_repo)
+        args = ("-e", _studio_core_install_spec(local_repo) if NO_TORCH else local_repo)
     elif canonical == "unsloth-zoo":
-        zoo_ref = _unsloth_zoo_ref()
-        step_label = f"overlaying unsloth-zoo from git {zoo_ref}"
-        install_label = f"Overlaying unsloth-zoo from git {zoo_ref}"
-        args = ("--force-reinstall", _unsloth_zoo_git_spec())
+        step_label = "overlaying maintained vendored unsloth-zoo"
+        install_label = "Overlaying maintained vendored unsloth-zoo"
+        args = ("--force-reinstall", _overlay_source_spec(name, local_repo))
     else:
         return False
+    dependency_args = () if NO_TORCH else ("--no-deps",)
     _step(_LABEL, step_label)
     if not strict:
-        return pip_install_try(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
-    pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
+        return pip_install_try(
+            install_label, "--no-cache-dir", *dependency_args, *args, constrain = NO_TORCH,
+        )
+    pip_install(
+        install_label, "--no-cache-dir", *dependency_args, *args, constrain = NO_TORCH,
+    )
     return True
 
 
+def _studio_core_install_spec(source: str) -> str:
+    if source.startswith("unsloth @ "):
+        return source.replace("unsloth @ ", "unsloth[studio] @ ", 1)
+    return f"{source}[studio]"
+
+
 def _overlay_local_core_packages(local_repo: str) -> None:
-    for name in ("unsloth", "unsloth-zoo"):
+    for name in _core_package_names("unsloth"):
         _overlay_local_core_package(name, local_repo)
 
 
@@ -5647,17 +5836,361 @@ def _is_overlayable_core_package(name: str) -> bool:
 
 
 def _overlay_source_spec(name: str, local_repo: str) -> str:
-    """What pip would be asked to build for this overlay.
-
-    unsloth-zoo comes from git, so an overlay is a network fetch just as much as
-    an index install is: it has to be staged before anything is uninstalled.
-    """
+    """The selected checkout source, staged before removing its installed files."""
     canonical = re.sub(r"[-_.]+", "-", name).lower()
     if canonical == "unsloth":
         return local_repo
     if canonical == "unsloth-zoo":
+        if local_repo:
+            return str(Path(local_repo) / "studio" / "backend" / "vendor" / "unsloth_zoo_compat")
         return _unsloth_zoo_git_spec()
     return ""
+
+
+_CORE_SOURCE_REGISTRY = ".unsloth-studio-source.json"
+_PRESERVE_CORE_TRACKING = object()
+_CORE_CHECKOUT_FILES = (
+    "pyproject.toml", "studio/install_zoo.py", "studio/python_policy.py",
+    "studio/backend/vendor/unsloth_zoo_compat/pyproject.toml",
+)
+
+
+def _core_source_record(source: str) -> dict:
+    match = re.fullmatch(
+        r"unsloth @ https://codeload\.github\.com/darbotlabs/darbot-unsloth/zip/"
+        r"([0-9a-fA-F]{40})(?:#sha256=([0-9a-fA-F]{64}))?",
+        source,
+    )
+    if match:
+        record = {"kind": "archive", "commit": match[1].lower()}
+        if match[2]:
+            record["sha256"] = match[2].lower()
+        return record
+    if "://" in source or source.startswith("unsloth @ "):
+        raise RuntimeError("Refusing to retain an unverified Core source URL.")
+    checkout = Path(source).resolve()
+    if not all((checkout / name).is_file() for name in _CORE_CHECKOUT_FILES):
+        raise RuntimeError("Core source retention requires the complete maintained checkout.")
+    return {"kind": "checkout", "path": str(checkout)}
+
+
+def _core_source_from_record(record: dict) -> str:
+    if record.get("kind") == "archive":
+        if not set(record).issubset({"kind", "commit", "sha256"}):
+            raise ValueError("Unexpected archive source fields")
+        source = (
+            "unsloth @ https://codeload.github.com/darbotlabs/darbot-unsloth/zip/"
+            + str(record.get("commit", ""))
+        )
+        if "sha256" in record:
+            source += "#sha256=" + str(record["sha256"])
+    elif record.get("kind") == "checkout":
+        if set(record) != {"kind", "path"} or not Path(record["path"]).is_absolute():
+            raise ValueError("Invalid checkout source")
+        source = record["path"]
+    else:
+        raise ValueError("Unknown Core source kind")
+    _core_source_record(source)
+    return source
+
+
+def _core_source_payload() -> dict | None:
+    path = install_manifest.venv_root() / _CORE_SOURCE_REGISTRY
+    try:
+        payload = json.loads(path.read_text(encoding = "utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise RuntimeError("The retained Core source is unreadable; select a complete checkout with --local.") from error
+    try:
+        if payload.get("schema") != 1 or payload.get("tracking") not in (None, "main", "pinned"):
+            raise ValueError("Unknown source policy")
+        _core_source_from_record(payload["core"])
+        if payload.get("tracking") and payload["core"]["kind"] != "archive":
+            raise ValueError("Editable checkouts cannot track a remote branch")
+        return payload
+    except (KeyError, ValueError, TypeError, AttributeError, RuntimeError) as error:
+        raise RuntimeError("The retained Core source is invalid; select a complete checkout with --local.") from error
+
+
+def _remember_core_source(source: str, *, tracking = _PRESERVE_CORE_TRACKING) -> None:
+    """Keep provenance outside uninstallable dist-info and transient wheel directories."""
+    record = _core_source_record(source)
+    explicit_pin = tracking is None and record["kind"] == "archive"
+    if record["kind"] == "checkout":
+        tracking = None
+    elif tracking is _PRESERVE_CORE_TRACKING:
+        previous = _core_source_payload()
+        tracking = (
+            previous.get("tracking")
+            if previous and previous["core"].get("commit") == record.get("commit")
+            else None
+        )
+    if explicit_pin:
+        tracking = "pinned"
+    if tracking not in (None, "main", "pinned"):
+        raise RuntimeError("Only the maintained main branch is a supported tracking source.")
+    payload = {"schema": 1, "core": record}
+    if tracking:
+        payload["tracking"] = tracking
+    root = install_manifest.venv_root()
+    path = root / _CORE_SOURCE_REGISTRY
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode = "w", encoding = "utf-8", prefix = ".unsloth-source-",
+            suffix = ".json", dir = root, delete = False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii = False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as error:
+        raise RuntimeError("Could not retain the selected Core source; no package should be removed.") from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok = True)
+
+
+def _remembered_core_source() -> str | None:
+    payload = _core_source_payload()
+    return _core_source_from_record(payload["core"]) if payload else None
+
+
+def _core_tracking_intent(source: str) -> str | None:
+    record = _core_source_record(source)
+    if record["kind"] == "checkout":
+        return None
+    requested = os.environ.get("UNSLOTH_CORE_TRACKING_REF", "").strip()
+    if requested:
+        if requested not in ("main", "pinned"):
+            raise RuntimeError("UNSLOTH_CORE_TRACKING_REF must be main or pinned.")
+        return "main" if requested == "main" else None
+    payload = _core_source_payload()
+    if payload and payload["core"].get("commit") == record["commit"] and "tracking" in payload:
+        return "main" if payload["tracking"] == "main" else None
+    # Unlike an immutable archive URL, PEP 610's requested VCS revision can
+    # distinguish a deliberate branch installation from an explicit commit pin.
+    try:
+        from importlib.metadata import distribution
+
+        provenance = json.loads(distribution("unsloth").read_text("direct_url.json") or "{}")
+        vcs = provenance.get("vcs_info", {})
+        if (
+            provenance.get("url", "").removesuffix(".git").rstrip("/")
+            == "https://github.com/darbotlabs/darbot-unsloth"
+            and vcs.get("requested_revision") in (None, "", "main")
+            and str(vcs.get("commit_id", "")).lower() == record["commit"]
+        ):
+            return "main"
+    except (ImportError, OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _resolve_tracked_core_source() -> str:
+    if _uv_is_offline():
+        raise RuntimeError("A tracked main update needs network access; repair still uses its retained snapshot.")
+    request = urllib.request.Request(
+        "https://api.github.com/repos/darbotlabs/darbot-unsloth/commits/main",
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "darbot-unsloth-installer"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout = 30) as response:
+            commit = json.loads(response.read(1048576)).get("sha", "")
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        raise RuntimeError("Could not resolve the maintained main branch; the installed snapshot was not changed.") from error
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+        raise RuntimeError("The maintained main endpoint did not return an immutable commit.")
+    return f"unsloth @ https://codeload.github.com/darbotlabs/darbot-unsloth/zip/{commit.lower()}"
+
+
+def _prepared_core_wheel(directory: str, name: str) -> Path:
+    from packaging.utils import parse_wheel_filename
+
+    wheels = [
+        path for path in Path(directory).glob("*.whl")
+        if str(parse_wheel_filename(path.name)[0]) == _canonical_package_name(name)
+    ]
+    if len(wheels) != 1:
+        raise RuntimeError(f"Expected exactly one prepared {name} wheel.")
+    return wheels[0]
+
+
+def _extract_core_update_sources(wheel: Path, destination: Path) -> Path:
+    import stat
+    import zipfile
+
+    prefixes = ("studio/backend/vendor/unsloth_zoo_compat/", "studio/backend/requirements/")
+    with zipfile.ZipFile(wheel) as archive:
+        for member in archive.infolist():
+            if not member.filename.startswith(prefixes):
+                continue
+            parts = member.filename.rstrip("/").split("/")
+            if (
+                "\\" in member.orig_filename or "\x00" in member.orig_filename
+                or ":" in member.filename
+                or any(part in ("", ".", "..") or part.rstrip(" .") != part for part in parts)
+                or stat.S_ISLNK(member.external_attr >> 16)
+            ):
+                raise RuntimeError("The prepared Core wheel has unsafe companion source paths.")
+            target = destination.joinpath(*parts)
+            if member.is_dir():
+                target.mkdir(parents = True, exist_ok = True)
+            else:
+                target.parent.mkdir(parents = True, exist_ok = True)
+                with archive.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+    constraints = destination / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
+    if not constraints.is_file():
+        raise RuntimeError("The prepared Core wheel does not contain its dependency constraints.")
+    return constraints
+
+
+def _install_core_update_wheels(wheels: dict[str, Path], constraints: Path) -> bool:
+    targets = [
+        _studio_core_install_spec(str(path)) if NO_TORCH and name == "unsloth" else str(path)
+        for name, path in wheels.items()
+    ]
+    constraint_args = ("--constraint", str(constraints))
+    if NO_TORCH:
+        exclusions = constraints.parent.parent / "no-torch-constraints.txt"
+        if not exclusions.is_file():
+            raise RuntimeError("The selected Core wheel is missing its no-torch exclusion constraints.")
+        constraint_args += ("--constraint", str(exclusions))
+    if USE_UV:
+        reinstall = [arg for name in wheels for arg in ("--reinstall-package", name)]
+        if pip_install_try(
+            "Updating selected Core/Zoo sources", *reinstall, *constraint_args, *targets,
+            constrain = False,
+        ):
+            return True
+    # pip has no package-scoped --force-reinstall. Resolve the genuine B graph,
+    # replace only the prepared payloads, then verify B's installed dependencies.
+    if not pip_install_try(
+        "Resolving selected source dependencies", *constraint_args, *targets,
+        constrain = False, force_pip = True,
+    ):
+        return False
+    if not pip_install_try(
+        "Replacing selected Core/Zoo payloads",
+        "--force-reinstall", "--no-deps", "--no-index",
+        *(str(path) for path in wheels.values()), constrain = False, force_pip = True,
+    ):
+        return False
+    return pip_install_try(
+        "Verifying selected source dependencies", *constraint_args, *targets,
+        constrain = False, force_pip = True,
+    )
+
+
+def _refresh_tracked_core(snapshot: str) -> bool:
+    """Advance a tracked pair without changing the source used by repair."""
+    source = _resolve_tracked_core_source()
+    if _core_source_record(source)["commit"] == _core_source_record(snapshot).get("commit"):
+        return False
+    prepared = []
+    try:
+        core_dir = _stage_replacement(source)
+        if core_dir is None:
+            raise RuntimeError("Could not prepare the selected Core commit; no packages were removed.")
+        prepared.append(core_dir)
+        core_wheel = _prepared_core_wheel(core_dir, "unsloth")
+        source_tree = Path(core_dir) / "paired-source"
+        constraints = _extract_core_update_sources(core_wheel, source_tree)
+        if NO_TORCH and not (constraints.parent.parent / "no-torch-constraints.txt").is_file():
+            raise RuntimeError("The selected Core wheel is missing its no-torch exclusion constraints.")
+        wheels = {}
+        if not NO_TORCH:
+            zoo_source = source_tree / "studio" / "backend" / "vendor" / "unsloth_zoo_compat"
+            if not (zoo_source / "pyproject.toml").is_file():
+                raise RuntimeError("The selected Core wheel does not contain its matching Zoo source.")
+            zoo_dir = _stage_replacement(str(zoo_source))
+            if zoo_dir is None:
+                raise RuntimeError("Could not prepare matching Zoo; no packages were removed.")
+            prepared.append(zoo_dir)
+            wheels["unsloth-zoo"] = _prepared_core_wheel(zoo_dir, "unsloth-zoo")
+        wheels["unsloth"] = core_wheel
+        _remember_core_source(snapshot, tracking = "main")
+        if not _install_core_update_wheels(wheels, constraints):
+            raise RuntimeError("Could not complete the selected Core/Zoo update; rerun before launching Studio.")
+        importlib.invalidate_caches()
+        _remember_core_source(source, tracking = "main")
+        return True
+    finally:
+        for directory in reversed(prepared):
+            shutil.rmtree(directory, ignore_errors = True)
+
+
+def _core_repair_source(name: str, local_repo: str = "", ci_source_overlay: str = "") -> str:
+    """Preserve explicit checkouts or authenticated fork provenance, never PyPI Core."""
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    if canonical not in ("unsloth", "unsloth-zoo"):
+        return name
+    checkout = local_repo or ci_source_overlay
+    if checkout:
+        return _overlay_source_spec(name, checkout)
+    if canonical == "unsloth-zoo":
+        return _unsloth_zoo_git_spec()
+
+    source_root = SCRIPT_DIR.parent
+    if all((source_root / filename).is_file() for filename in _CORE_CHECKOUT_FILES):
+        return str(source_root)
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution
+        from urllib.parse import urlsplit
+
+        try:
+            raw_provenance = distribution("unsloth").read_text("direct_url.json")
+        except PackageNotFoundError:
+            raw_provenance = None
+        if not raw_provenance:
+            for _, metadata_path in install_manifest._installed_metadata_records("unsloth"):
+                if metadata_path is not None:
+                    direct_url = metadata_path / "direct_url.json"
+                    if direct_url.is_file():
+                        raw_provenance = direct_url.read_text(encoding = "utf-8")
+                        break
+        provenance = json.loads(raw_provenance or "{}")
+        url = provenance.get("url", "")
+        parsed = urlsplit(url)
+        if parsed.scheme == "file":
+            path = urllib.request.url2pathname(
+                (f"//{parsed.netloc}" if parsed.netloc and parsed.netloc != "localhost" else "") + parsed.path
+            )
+            if Path(path, "studio", "install_zoo.py").is_file():
+                return path
+        commit = provenance.get("vcs_info", {}).get("commit_id", "")
+        if (
+            url.rstrip("/").removesuffix(".git") == "https://github.com/darbotlabs/darbot-unsloth"
+            and re.fullmatch(r"[0-9a-fA-F]{40}", commit)
+        ):
+            return f"unsloth @ https://codeload.github.com/darbotlabs/darbot-unsloth/zip/{commit}"
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc == "codeload.github.com"
+            and re.fullmatch(r"/darbotlabs/darbot-unsloth/zip/[0-9a-fA-F]{40}", parsed.path)
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            archive = provenance.get("archive_info", {})
+            digest = archive.get("hashes", {}).get("sha256", "")
+            if not digest and str(archive.get("hash", "")).startswith("sha256="):
+                digest = archive["hash"][7:]
+            if re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+                return f"unsloth @ {url}#sha256={digest}"
+    except (OSError, ValueError, TypeError, AttributeError, ImportError):
+        pass
+    remembered = _remembered_core_source()
+    if remembered is not None:
+        return remembered
+    raise RuntimeError(
+        "Cannot identify the maintained fork source for Core repair. "
+        "Rerun the root installer with --local and a complete darbotlabs/darbot-unsloth checkout; "
+        "the published PyPI package will not be substituted."
+    )
 
 
 def _rewrite_minimal_metadata(path: str, name: str) -> bool:
@@ -5940,7 +6473,7 @@ def _core_package_names(package_name: str) -> "tuple[str, ...]":
     had the deep check scan zoo and force a pass no repair gate would act on.
     """
     default = re.sub(r"[-_.]+", "-", package_name).lower() == "unsloth"
-    return (package_name, "unsloth-zoo") if default else (package_name,)
+    return (package_name, "unsloth-zoo") if default and not NO_TORCH else (package_name,)
 
 
 def _repair_damaged_core_payload(
@@ -5996,6 +6529,37 @@ def _repair_damaged_core_payload(
                 damaged.append(name)
         except Exception:
             continue
+    staged_replacements: dict[str, str] = {}
+    replacement_sources: dict[str, str] = {}
+    try:
+        # Core's wheel owns the bundled Zoo source. Build all replacements before
+        # force-reinstalling either package can remove that source tree.
+        for name in damaged:
+            try:
+                source = _core_repair_source(name, local_repo)
+            except RuntimeError as error:
+                _safe_print(_red(str(error)), file = sys.stderr)
+                return False
+            staged = _stage_replacement(source)
+            if staged is None:
+                _safe_print(_red(f"Could not prepare the selected source for {name}; no packages were removed."), file = sys.stderr)
+                return False
+            staged_replacements[name] = staged
+            replacement_sources[name] = source
+        for name in damaged:
+            if re.sub(r"[-_.]+", "-", name).lower() == "unsloth":
+                try:
+                    _remember_core_source(replacement_sources[name])
+                except RuntimeError as error:
+                    _safe_print(_red(str(error)), file = sys.stderr)
+                    return False
+        return _restore_damaged_core_payloads(damaged, staged_replacements)
+    finally:
+        for staged in staged_replacements.values():
+            shutil.rmtree(staged, ignore_errors = True)
+
+
+def _restore_damaged_core_payloads(damaged: list[str], staged_replacements: dict[str, str]) -> bool:
     still_damaged: list[str] = []
     for name in damaged:
         _step(_LABEL, f"{name} is missing installed files; reinstalling it", _dim)
@@ -6008,7 +6572,11 @@ def _repair_damaged_core_payload(
             "--reinstall-package",
             name,
             "--force-reinstall",
+            "--no-index",
+            "--find-links",
+            staged_replacements[name],
             name,
+            force_pip = True,
         )
         importlib.invalidate_caches()
         # Presence first: --force-reinstall uninstalls before it installs, and
@@ -6080,6 +6648,15 @@ def _repair_duplicate_core_metadata(
 
     repaired: list[str] = []
     staging_dirs: list[str] = []
+    staged_replacements: dict[str, str] = {}
+    try:
+        replacement_sources = {
+            name: _core_repair_source(name, local_repo, ci_source_overlay)
+            for name, _ in duplicates
+        }
+    except RuntimeError as error:
+        _safe_print(_red(str(error)), file = sys.stderr)
+        return False
     # One quarantine per package, discarded as soon as that package is back in place.
     # Sharing one would, on a later package's failure, restore the first package's stale
     # record over the install that replaced it: the conflict returns, and its old RECORD
@@ -6157,7 +6734,7 @@ def _repair_duplicate_core_metadata(
                 return False
 
             canonical = re.sub(r"[-_.]+", "-", name).lower()
-            source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
+            source_repo = local_repo or ci_source_overlay
             # A local or git source installs from a path or URL, so there is
             # nothing to stage; anything else comes off an index, which has to
             # be proven reachable while the current install is still intact.
@@ -6165,19 +6742,28 @@ def _repair_duplicate_core_metadata(
             # Stage whichever source will be installed, overlay included: an
             # overlay is a git fetch or a build, either of which can fail after
             # the uninstall loop has already removed every record.
-            staged = _stage_replacement(
-                _overlay_source_spec(name, source_repo) if overlaid else name
-            )
-            if staged is None:
-                _safe_print(
-                    _red(
-                        f"   could not fetch a replacement for {name}; leaving "
-                        "the existing install in place"
-                    ),
-                    file = sys.stderr,
-                )
-                return False
-            staging_dirs.append(staged)
+            if not staged_replacements:
+                for replacement_name, _ in duplicates:
+                    staged = _stage_replacement(replacement_sources[replacement_name])
+                    if staged is None:
+                        _safe_print(
+                            _red(
+                                f"   could not fetch a replacement for {replacement_name}; leaving "
+                                "the existing install in place"
+                            ),
+                            file = sys.stderr,
+                        )
+                        return False
+                    staged_replacements[replacement_name] = staged
+                    staging_dirs.append(staged)
+                for replacement_name, source in replacement_sources.items():
+                    if re.sub(r"[-_.]+", "-", replacement_name).lower() == "unsloth":
+                        try:
+                            _remember_core_source(source)
+                        except RuntimeError as error:
+                            _safe_print(_red(str(error)), file = sys.stderr)
+                            return False
+            staged = staged_replacements[name]
 
             removed_any = False
             while record_count:
@@ -6706,6 +7292,16 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     return env
 
 
+def _install_constraint_paths(constrain: bool) -> list[Path]:
+    paths = [CONSTRAINTS] if constrain and CONSTRAINTS.is_file() else []
+    if NO_TORCH:
+        exclusions = REQ_ROOT / "no-torch-constraints.txt"
+        if not exclusions.is_file():
+            raise RuntimeError("The selected source is missing its required no-torch exclusion constraints.")
+        paths.append(exclusions)
+    return paths
+
+
 def pip_install_try(
     label: str,
     *args: str,
@@ -6718,11 +7314,9 @@ def pip_install_try(
     # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
     # so the memoized classification must not survive it.
     _invalidate_torch_runtime_probe()
-    constraint_args_pip: list[str] = []
-    constraint_args_uv: list[str] = []
-    if constrain and CONSTRAINTS.is_file():
-        constraint_args_pip = ["-c", str(CONSTRAINTS)]
-        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
+    constraints = _install_constraint_paths(constrain)
+    constraint_args_pip = [arg for path in constraints for arg in ("-c", str(path))]
+    constraint_args_uv = [arg for path in constraints for arg in ("-c", _uv_safe_path(path))]
 
     if USE_UV and not force_pip:
         cmd = _build_uv_cmd(args) + constraint_args_uv
@@ -6758,11 +7352,9 @@ def pip_install(
     # Any pip operation can change which torch is installed, so the memoized
     # classification must not outlive it.
     _invalidate_torch_runtime_probe()
-    constraint_args_pip: list[str] = []
-    constraint_args_uv: list[str] = []
-    if constrain and CONSTRAINTS.is_file():
-        constraint_args_pip = ["-c", str(CONSTRAINTS)]
-        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
+    constraints = _install_constraint_paths(constrain)
+    constraint_args_pip = [arg for path in constraints for arg in ("-c", str(path))]
+    constraint_args_uv = [arg for path in constraints for arg in ("-c", _uv_safe_path(path))]
 
     actual_req = req
     temp_reqs: list[Path] = []
@@ -6772,6 +7364,8 @@ def pip_install(
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+        # The GGUF-only closure must be metadata-valid without installing Torch.
+        args = tuple(arg for arg in args if arg != "--no-deps")
     if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
         # wheel. `unsloth studio update --local` does not pass
@@ -6935,6 +7529,30 @@ def _report_mlx_stack_health() -> None:
 
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
+    if not install_manifest.supported_interpreter():
+        _safe_print(
+            "error: Unsloth requires standard-GIL CPython >=3.14.7,<3.15 "
+            f"(not 3.14t); found {install_manifest.interpreter_identity()}. "
+            "Rebuild the environment; do not reuse older native extensions.",
+            file = sys.stderr,
+        )
+        return 1
+    if not NO_TORCH:
+        try:
+            _explicit_torch_index_url()
+        except ValueError as error:
+            _safe_print(f"error: {error}", file = sys.stderr)
+            return 1
+    if not NO_TORCH:
+        smi = _nvidia_smi_path()
+        sms = _nvidia_compute_sms(smi) if smi else None
+        if sms and any(sm < 80 for sm in sms):
+            _safe_print(
+                "warning: NVIDIA GPUs below sm_80 (including T1000 sm_75) are "
+                "outside Triton 3.8's officially supported targets. CUDA remains "
+                "enabled; qualify compiled training features individually. "
+                "Successful PyTorch or GGUF inference is not a Triton training qualification."
+            )
     _STEP = 0
     # An aborted earlier run leaves it set, and every _safe_print() consumes it --
     # the first message would get a stray newline.
@@ -6948,21 +7566,36 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    # read where the overlay runs, so UNSLOTH_ZOO_REF reaches the metadata-repair
-    # reinstall path too, not just the two calls below
-    # Clean-machine CI overlays only unsloth, not the full local source pair.
+    # The root installers select the maintained CI checkout before resolving Core/Zoo.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
+    try:
+        selected_core_source = _core_repair_source(package_name, local_repo, ci_source_overlay)
+        core_tracking = (
+            _core_tracking_intent(selected_core_source)
+            if _canonical_package_name(package_name) == "unsloth" else None
+        )
+        if _canonical_package_name(package_name) == "unsloth":
+            _remember_core_source(selected_core_source, tracking = core_tracking)
+            record = _core_source_record(selected_core_source)
+            if not core_tracking and record["kind"] == "archive":
+                _note(
+                    f"Core is pinned to {record['commit'][:12]}; "
+                    "set UNSLOTH_CORE_TRACKING_REF=main to follow the maintained branch."
+                )
+    except RuntimeError as error:
+        _safe_print(f"error: {error}", file = sys.stderr)
+        return 1
     # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
     base_total = 12 if IS_WINDOWS else 13
-    if IS_MACOS:
-        base_total -= 1  # triton step is skipped on macOS
+    if IS_MACOS or (NO_TORCH and not IS_WINDOWS):
+        base_total -= 1  # no compiler sources in the GGUF-only profile
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7025,11 +7658,13 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
-    # A superseded dist-info makes version() and every RECORD consumer choose
-    # an arbitrary package version. Repair it before any fast package operation,
-    # including installer handoffs that set skip_base after their own upgrade.
+    if not _retire_legacy_no_torch_packages():
+        return 1
+    _repair_incompatible_protobuf_wheel()
+
+    # Repairs restore the installed snapshot, never the current remote branch.
     if not _repair_duplicate_core_metadata(
-        (package_name, "unsloth-zoo"),
+        _core_package_names(package_name),
         local_repo = local_repo,
         ci_source_overlay = ci_source_overlay,
     ):
@@ -7040,9 +7675,25 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
+    core_refreshed = False
+    if core_tracking == "main" and not skip_base:
+        try:
+            core_refreshed = _refresh_tracked_core(selected_core_source)
+        except (RuntimeError, OSError, ValueError) as error:
+            _safe_print(_red(str(error)), file = sys.stderr)
+            return 1
+    if core_refreshed:
+        _progress("base packages (tracked main)")
+    elif not NO_TORCH:
+        zoo_helper = Path(local_repo).resolve() / "studio" / "install_zoo.py" if local_repo else SCRIPT_DIR / "install_zoo.py"
+        zoo_command = [sys.executable, str(zoo_helper), "--python", sys.executable]
+        if CONSTRAINTS.is_file():
+            zoo_command += ["--constraints", str(CONSTRAINTS)]
+        run("Bootstrapping maintained Zoo companion", zoo_command)
+
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
@@ -7062,28 +7713,23 @@ def install_python_stack() -> int:
         _GFX906_BNB_ABSENT_BEFORE_BASE = not _bitsandbytes_installed()
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
-    if skip_base:
+    if skip_base or core_refreshed:
         # install.sh / install.ps1 already installed both core distributions.
         pass
     elif NO_TORCH:
-        # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
+        # Core's base is CLI-only. Defer Zoo and resolve the Torch-free closure.
         _progress("base packages (no torch)")
         desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
         unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
+            _studio_core_install_spec(selected_core_source)
+            if _canonical_package_name(package_name) == "unsloth" else selected_core_source
         )
         pip_install(
-            f"Updating {package_name} + unsloth-zoo (no-torch mode)",
+            f"Updating {package_name} (no-torch mode)",
             "--no-cache-dir",
-            "--no-deps",
             "--upgrade-package",
             package_name,
-            "--upgrade-package",
-            "unsloth-zoo",
             unsloth_spec,
-            "unsloth-zoo",
         )
         # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(
@@ -7094,7 +7740,6 @@ def install_python_stack() -> int:
         pip_install(
             "Installing no-torch runtime deps",
             "--no-cache-dir",
-            "--no-deps",
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
@@ -7110,8 +7755,8 @@ def install_python_stack() -> int:
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            "unsloth",
-            "unsloth-zoo",
+            local_repo,
+            _unsloth_zoo_git_spec(),
         )
         _overlay_local_core_packages(local_repo)
     elif package_name != "unsloth":
@@ -7125,11 +7770,7 @@ def install_python_stack() -> int:
     else:
         _progress("base packages")
         desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-        unsloth_spec = (
-            f"{package_name}>={desktop_min_ver}"
-            if (desktop_min_ver and package_name == "unsloth")
-            else package_name
-        )
+        unsloth_spec = selected_core_source
         pip_install(
             "Updating core packages",
             "--no-cache-dir",
@@ -7138,7 +7779,14 @@ def install_python_stack() -> int:
             "--upgrade-package",
             "unsloth-zoo",
             unsloth_spec,
-            "unsloth-zoo",
+            _unsloth_zoo_git_spec(),
+        )
+
+    if core_refreshed and NO_TORCH:
+        pip_install(
+            "Installing no-torch runtime deps",
+            "--no-cache-dir",
+            req = REQ_ROOT / "no-torch-runtime.txt",
         )
 
     if not skip_base:
@@ -7164,8 +7812,9 @@ def install_python_stack() -> int:
         _ensure_rocm_torch()
         _ensure_xpu_torch()
         _ensure_cpu_torch()
-        # Last, after every torch migration: the swap keys off the installed +xpu label, so a
-        # CPU pin over an XPU venv would leave XPU triton under a CPU torch.
+        _ensure_cuda_triton()
+        _ensure_rocm_triton()
+        # Namespace providers must be repaired after every Torch migration.
         _ensure_xpu_triton()
 
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
@@ -7220,10 +7869,10 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras.txt",
     )
 
-    # 3b. Extra dependencies (no-deps) -- audio model support etc.
+    # 3b. Audio/ML extras, filtered and normally resolved in GGUF-only mode.
     _progress("extra codecs")
     pip_install(
-        "Installing extras (no-deps)",
+        "Installing extras" if NO_TORCH else "Installing extras (no-deps)",
         "--no-deps",
         "--no-cache-dir",
         req = REQ_ROOT / "extras-no-deps.txt",
@@ -7252,10 +7901,10 @@ def install_python_stack() -> int:
             _torchao_spec,
         )
 
-    # 5. Triton kernels (no-deps, from source). Skipped on Windows/macOS (no support)
+    # 5. Triton kernels (no-deps, from source). Only for Linux ML installations
     #    and without git (the requirement is a git+https URL); a training speedup
     #    only, so warn rather than fail the install.
-    if not IS_WINDOWS and not IS_MACOS:
+    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         if not _has_working_git():
             _progress("triton kernels (skipped, no git)")
             _note("no working git -- skipping triton kernels (training speedup only)")
@@ -7337,9 +7986,9 @@ def install_python_stack() -> int:
         pip_install(
             f"Installing local data-designer {plugin_name} plugin",
             "--no-cache-dir",
-            "--no-deps",
+            *(("--no-deps",) if not NO_TORCH else ()),
             str(plugin_dir),
-            constrain = False,
+            constrain = NO_TORCH,
         )
 
     # 11b. The pinned Diffusers release. NOT in base.txt, which is applied early: this must
@@ -7354,12 +8003,8 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 
-    # 12. Patch metadata for single-env compatibility
+    # DataDesigner 0.9.2 resolves normally; never rewrite its dependency metadata.
     _progress("finalizing")
-    run(
-        "Patching single-env metadata",
-        [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
-    )
 
     # 13. Final torch repair. Steps above can pull CUDA torch from PyPI, so repair last.
     torch_flavor_tag = ""
@@ -7369,8 +8014,9 @@ def install_python_stack() -> int:
         _ensure_rocm_torch()
         _ensure_xpu_torch()
         _ensure_cpu_torch()
-        # Last, after every torch migration: the swap keys off the installed +xpu label, so a
-        # CPU pin over an XPU venv would leave XPU triton under a CPU torch.
+        _ensure_cuda_triton()
+        _ensure_rocm_triton()
+        # Namespace providers must be repaired after every Torch migration.
         _ensure_xpu_triton()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
@@ -7380,6 +8026,7 @@ def install_python_stack() -> int:
         torch_flavor_tag = _expected_torch_flavor_tag()
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+        _ensure_cuda_triton()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
@@ -7404,7 +8051,7 @@ def install_python_stack() -> int:
     # the installer would report success while every later check rejects the
     # environment. A no-op when nothing is ambiguous.
     if not _repair_duplicate_core_metadata(
-        (package_name, "unsloth-zoo"),
+        _core_package_names(package_name),
         local_repo = local_repo,
         ci_source_overlay = ci_source_overlay,
     ):

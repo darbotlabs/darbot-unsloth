@@ -14,6 +14,10 @@
 
 import os, importlib.util, platform, sys
 
+from .runtime_compat import require_supported_python, get_cuda_feature_support
+
+require_supported_python()
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed (processing_utils
@@ -168,7 +172,7 @@ if _IS_MLX:
     except ImportError as _e:
         raise ImportError(
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
-            "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
+            f'Run `python -m studio.install_zoo --python "{sys.executable}"` or rerun install.sh.'
         ) from _e
     # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the mlx.trainer / mlx.loader
     # submodules; surface an install hint instead of a raw ImportError.
@@ -183,8 +187,8 @@ if _IS_MLX:
     except ImportError as _e:
         raise ImportError(
             "Unsloth: MLX support requires an unsloth-zoo build that includes "
-            "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Upgrade with "
-            "`pip install -U unsloth-zoo` or rerun install.sh."
+            "`unsloth_zoo.mlx.trainer` and `unsloth_zoo.mlx.loader`. Run "
+            f'`python -m studio.install_zoo --python "{sys.executable}"` or rerun install.sh.'
         ) from _e
 
     import dataclasses as _dataclasses

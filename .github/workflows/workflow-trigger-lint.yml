@@ -65,7 +65,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install PyYAML
         # pytest and PyYAML are pinned to the versions security-audit.yml pinned them
@@ -217,7 +217,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14.7'
 
       - name: Install CPU torch + transformers
         run: |
@@ -225,7 +225,7 @@ jobs:
           python -m pip install --quiet \
             --index-url https://download.pytorch.org/whl/cpu \
             --extra-index-url https://pypi.org/simple \
-            torch
+            "torch==2.14.0"
           # unsloth-zoo as well. All three suites import `unsloth.models`, which runs
           # `unsloth/__init__.py`, and that raises ImportError outright when the zoo
           # distribution is absent - `UNSLOTH_ZOO_DISABLE_GPU_INIT` does not bypass it.
@@ -236,7 +236,8 @@ jobs:
           # import, so without this the job fails during collection and none of the
           # four suites run. `consolidated-tests-ci.yml` installs it for the same
           # reason on the same kind of runner.
-          python -m pip install --quiet transformers peft pytest unsloth-zoo triton
+          python -m pip install --quiet "transformers==5.16.1" peft pytest "triton==3.8.0"
+          python studio/install_zoo.py --python "$(python -c 'import sys; print(sys.executable)')"
 
       # Named one by one, not as a directory. The point of this job is those three
       # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare
