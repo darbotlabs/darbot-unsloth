@@ -774,6 +774,7 @@ class TestBuildPipCmdUpgradeIntent:
 @pytest.fixture
 def isolated_core_repair(monkeypatch):
     original_rmtree = ips.shutil.rmtree
+    original_checkout_validator = ips._is_core_checkout
     root = Path.cwd().resolve()
 
     def cleanup(path, *args, **kwargs):
@@ -786,6 +787,12 @@ def isolated_core_repair(monkeypatch):
     monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: pytest.fail("unmocked package mutation"))
     monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: pytest.fail("unmocked package mutation"))
     monkeypatch.setattr(ips, "_remember_core_source", lambda source: None)
+    # These argv-only fixtures model validated source trees, not real /src directories.
+    monkeypatch.setattr(
+        ips, "_is_core_checkout",
+        lambda path: str(Path(path)) in {str(Path("/src/unsloth")), str(Path("/src/candidate"))}
+        or original_checkout_validator(path),
+    )
 
 
 @pytest.mark.usefixtures("isolated_core_repair")

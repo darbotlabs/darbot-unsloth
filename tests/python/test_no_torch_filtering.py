@@ -585,7 +585,6 @@ class TestInstallPythonStackSubprocessMock:
                 mock.patch.object(ips, "_has_working_git", return_value = True),
                 mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
                 mock.patch("pathlib.Path.is_dir", return_value = True),
-                mock.patch("pathlib.Path.is_file", return_value = True),
             ):
                 patches.enter_context(patcher)
             with mock.patch.dict(os.environ, env, clear = False):

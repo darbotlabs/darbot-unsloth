@@ -62,6 +62,8 @@ def test_explicit_checkout_stays_fixed_even_with_inherited_main(stack, monkeypat
         path = checkout / name
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text("work in progress", encoding = "utf-8")
+    for name in ("pyproject.toml", "studio/backend/vendor/unsloth_zoo_compat/pyproject.toml"):
+        (checkout / name).write_bytes((ROOT / name).read_bytes())
     monkeypatch.setenv("UNSLOTH_CORE_TRACKING_REF", "main")
     assert stack._core_tracking_intent(str(checkout)) is None
     stack._remember_core_source(str(checkout), tracking = "main")

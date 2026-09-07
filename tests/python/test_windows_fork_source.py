@@ -27,6 +27,17 @@ def stack():
     return module
 
 
+def make_checkout(module, path):
+    for filename in module._CORE_CHECKOUT_FILES:
+        target = path / filename
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text("", encoding = "utf-8")
+    for filename in ("pyproject.toml", "studio/backend/vendor/unsloth_zoo_compat/pyproject.toml"):
+        (path / filename).write_bytes((ROOT / filename).read_bytes())
+    (path / "unsloth" / "_version.py").write_text('__version__ = "2026.9.3"\n', encoding = "utf-8")
+    return path
+
+
 @pytest.fixture(autouse = True)
 def isolate_source_registry(monkeypatch, tmp_path):
     root = tmp_path / "venv"
@@ -67,12 +78,117 @@ def test_core_repair_keeps_fork_provenance(monkeypatch, tmp_path, kind):
 
 def test_ci_checkout_selects_both_core_and_companion(monkeypatch, tmp_path):
     module = stack()
-    selected = tmp_path / "candidate"
+    selected = make_checkout(module, tmp_path / "candidate")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(tmp_path / "unrelated"))
     assert Path(module._core_repair_source("unsloth", ci_source_overlay = str(selected))) == selected
     assert Path(module._core_repair_source("unsloth-zoo", ci_source_overlay = str(selected))) == (
         selected / "studio" / "backend" / "vendor" / "unsloth_zoo_compat"
     )
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_installed_container_with_uroman_pyproject_is_not_core_source(
+    monkeypatch, tmp_path, retained,
+):
+    import subprocess
+    import sys
+
+    module = stack()
+    environment = module.install_manifest.venv_root()
+    site = make_checkout(module, environment / "Lib" / "site-packages")
+    foreign_project = b'[build-system]\nrequires=["setuptools"]\nbuild-backend="setuptools.build_meta"\n[project]\nname="uroman"\nversion="1.3.1.1"\n'
+    (site / "pyproject.toml").write_bytes(foreign_project)
+    dist = site / "unsloth-2026.9.3.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.3\n", encoding = "utf-8",
+    )
+    provenance = {"url": (tmp_path / "unsloth-2026.9.3-py3-none-any.whl").as_uri(), "archive_info": {}}
+    (dist / "direct_url.json").write_text(json.dumps(provenance), encoding = "utf-8")
+    monkeypatch.setattr(module, "SCRIPT_DIR", site / "studio")
+    monkeypatch.setattr(module.install_manifest, "_installed_metadata_records", lambda name: [])
+    monkeypatch.setattr(
+        importlib.metadata, "distribution",
+        lambda name: SimpleNamespace(read_text = lambda path: json.dumps(provenance)),
+    )
+    if retained:
+        module._remember_core_source(str(ROOT), tracking = None)
+        assert Path(module._core_repair_source("unsloth")) == ROOT
+    else:
+        with pytest.raises(RuntimeError, match = "complete.*checkout"):
+            module._core_repair_source("unsloth")
+    assert not module._is_core_checkout(site)
+    with pytest.raises(RuntimeError, match = "complete maintained checkout"):
+        module._core_source_record(str(site))
+
+    probe = """
+import importlib.util,sys
+from pathlib import Path
+script,site,root=map(Path,sys.argv[1:])
+sys.path.insert(0,str(site))
+spec=importlib.util.spec_from_file_location('production_source_probe',script)
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.SCRIPT_DIR=site/'studio'
+m.install_manifest.venv_root=lambda:root
+m.install_manifest._metadata_scan_paths=lambda:[str(site)]
+try:
+    print('SOURCE='+m._core_repair_source('unsloth'))
+except RuntimeError as error:
+    print('ERROR='+str(error)); sys.exit(3)
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe, str(ROOT / "studio" / "install_python_stack.py"), str(site), str(environment)],
+        capture_output = True, text = True,
+    )
+    assert result.returncode == (0 if retained else 3), result.stdout + result.stderr
+    assert (f"SOURCE={ROOT}" if retained else "ERROR=Cannot identify") in result.stdout
+    assert (site / "pyproject.toml").read_bytes() == foreign_project
+
+
+def test_git_free_source_archive_has_valid_checkout_identity(tmp_path):
+    module = stack()
+    checkout = make_checkout(module, tmp_path / "source-archive")
+    assert not (checkout / ".git").exists()
+    assert module._is_core_checkout(checkout)
+    assert module._core_source_record(str(checkout)) == {"kind": "checkout", "path": str(checkout)}
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["foreign-project", "foreign-backend", "wrong-entrypoint", "missing-version-input", "venv", "site-packages", "dist-packages"],
+)
+def test_all_core_source_selection_paths_reject_non_checkouts(monkeypatch, tmp_path, invalid):
+    module = stack()
+    name = invalid if invalid.endswith("packages") else "candidate"
+    checkout = make_checkout(module, tmp_path / name)
+    project = checkout / "pyproject.toml"
+    if invalid == "foreign-project":
+        project.write_text(project.read_text().replace('name = "unsloth"', 'name = "uroman"', 1), encoding = "utf-8")
+    elif invalid == "foreign-backend":
+        project.write_text(project.read_text().replace("setuptools.build_meta", "hatchling.build"), encoding = "utf-8")
+    elif invalid == "wrong-entrypoint":
+        project.write_text(project.read_text().replace("unsloth_cli:app", "uroman:main"), encoding = "utf-8")
+    elif invalid == "missing-version-input":
+        (checkout / "unsloth" / "_version.py").unlink()
+    elif invalid == "venv":
+        (checkout / "pyvenv.cfg").write_text("home = python\n", encoding = "utf-8")
+    assert not module._is_core_checkout(checkout)
+    with pytest.raises(RuntimeError, match = "complete maintained checkout"):
+        module._core_source_record(str(checkout))
+    with pytest.raises(RuntimeError, match = "not a complete"):
+        module._core_repair_source("unsloth", local_repo = str(checkout))
+    with pytest.raises(RuntimeError, match = "not a complete"):
+        module._core_repair_source("unsloth-zoo", ci_source_overlay = str(checkout))
+    provenance = {"url": checkout.as_uri(), "dir_info": {"editable": True}}
+    monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path / "installed" / "studio")
+    monkeypatch.setattr(
+        importlib.metadata, "distribution",
+        lambda name: SimpleNamespace(read_text = lambda path: json.dumps(provenance)),
+    )
+    with pytest.raises(RuntimeError, match = "working checkout"):
+        module._core_repair_source("unsloth")
+    with pytest.raises(RuntimeError, match = "complete maintained checkout"):
+        module._core_source_from_record({"kind": "checkout", "path": str(checkout)})
 
 
 @pytest.mark.parametrize("repair", ["payload", "duplicates"])
@@ -227,10 +343,7 @@ def test_all_replacements_are_prepared_before_core_can_remove_zoo(
     sources = {name: tmp_path / name for name in packages}
     for source in sources.values():
         source.mkdir()
-    for filename in module._CORE_CHECKOUT_FILES:
-        path = sources["unsloth"] / filename
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text("", encoding = "utf-8")
+    make_checkout(module, sources["unsloth"])
     events = []
     restored = set()
     records = {name: ["old", "new"] for name in packages}

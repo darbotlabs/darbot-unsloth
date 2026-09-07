@@ -5850,9 +5850,64 @@ def _overlay_source_spec(name: str, local_repo: str) -> str:
 _CORE_SOURCE_REGISTRY = ".unsloth-studio-source.json"
 _PRESERVE_CORE_TRACKING = object()
 _CORE_CHECKOUT_FILES = (
-    "pyproject.toml", "studio/install_zoo.py", "studio/python_policy.py",
+    "pyproject.toml", "README.md", "MANIFEST.in",
+    "unsloth/__init__.py", "unsloth/_version.py", "unsloth_cli/__init__.py",
+    "studio/__init__.py", "studio/install_zoo.py", "studio/python_policy.py",
     "studio/backend/vendor/unsloth_zoo_compat/pyproject.toml",
 )
+
+
+def _is_core_checkout(path: str | Path) -> bool:
+    """Recognize buildable Core sources without confusing installed containers with them."""
+    import sysconfig
+    import tomllib
+
+    try:
+        checkout = Path(path).resolve()
+        environment_roots = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
+        environment_roots.update(
+            Path(value).resolve()
+            for key, value in sysconfig.get_paths().items()
+            if key in ("purelib", "platlib") and value
+        )
+        if (
+            checkout in environment_roots
+            or checkout.name.casefold() in ("site-packages", "dist-packages")
+            or (checkout / "pyvenv.cfg").is_file()
+            or not all((checkout / name).is_file() for name in _CORE_CHECKOUT_FILES)
+        ):
+            return False
+        metadata = tomllib.loads((checkout / "pyproject.toml").read_text(encoding = "utf-8"))
+        project = metadata.get("project", {})
+        build = metadata.get("build-system", {})
+        if (
+            _canonical_package_name(project.get("name", "")) != "unsloth"
+            or build.get("build-backend") != "setuptools.build_meta"
+            or not isinstance(build.get("requires"), list)
+            or not any(re.match(r"setuptools(?:[<>=!~;\[]|$)", req) for req in build["requires"])
+            or project.get("scripts", {}).get("unsloth") != "unsloth_cli:app"
+        ):
+            return False
+        dynamic = metadata.get("tool", {}).get("setuptools", {}).get("dynamic", {})
+        if not isinstance(project.get("version"), str) and dynamic.get("version", {}).get("attr") != (
+            "unsloth._version.__version__"
+        ):
+            return False
+        readme = project.get("readme")
+        if isinstance(readme, dict):
+            readme = readme.get("file")
+        if not isinstance(readme, str):
+            return False
+        readme_path = Path(readme)
+        if readme_path.is_absolute() or ".." in readme_path.parts or not (checkout / readme_path).is_file():
+            return False
+        companion = tomllib.loads(
+            (checkout / "studio" / "backend" / "vendor" / "unsloth_zoo_compat" / "pyproject.toml")
+            .read_text(encoding = "utf-8")
+        )
+        return _canonical_package_name(companion.get("project", {}).get("name", "")) == "unsloth-zoo"
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
+        return False
 
 
 def _core_source_record(source: str) -> dict:
@@ -5869,7 +5924,7 @@ def _core_source_record(source: str) -> dict:
     if "://" in source or source.startswith("unsloth @ "):
         raise RuntimeError("Refusing to retain an unverified Core source URL.")
     checkout = Path(source).resolve()
-    if not all((checkout / name).is_file() for name in _CORE_CHECKOUT_FILES):
+    if not _is_core_checkout(checkout):
         raise RuntimeError("Core source retention requires the complete maintained checkout.")
     return {"kind": "checkout", "path": str(checkout)}
 
@@ -6141,12 +6196,17 @@ def _core_repair_source(name: str, local_repo: str = "", ci_source_overlay: str 
         return name
     checkout = local_repo or ci_source_overlay
     if checkout:
+        if not _is_core_checkout(checkout):
+            raise RuntimeError(
+                "The selected Core source is not a complete maintained Unsloth checkout; "
+                "an environment container is not a source checkout."
+            )
         return _overlay_source_spec(name, checkout)
     if canonical == "unsloth-zoo":
         return _unsloth_zoo_git_spec()
 
     source_root = SCRIPT_DIR.parent
-    if all((source_root / filename).is_file() for filename in _CORE_CHECKOUT_FILES):
+    if _is_core_checkout(source_root):
         return str(source_root)
     try:
         from importlib.metadata import PackageNotFoundError, distribution
@@ -6170,7 +6230,7 @@ def _core_repair_source(name: str, local_repo: str = "", ci_source_overlay: str 
             path = urllib.request.url2pathname(
                 (f"//{parsed.netloc}" if parsed.netloc and parsed.netloc != "localhost" else "") + parsed.path
             )
-            if Path(path, "studio", "install_zoo.py").is_file():
+            if _is_core_checkout(path):
                 return path
             if "dir_info" in provenance:
                 raise RuntimeError(
