@@ -106,13 +106,58 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
     module = sys.modules.get("datasets.features._torchcodec")
     if module is None:
         module = types.ModuleType("datasets.features._torchcodec")
-        module.AudioDecoder = object
         monkeypatch.setitem(sys.modules, "datasets.features._torchcodec", module)
+
+    class WorkingDecoder:
+        def __init__(self, source, *, sample_rate, num_channels):
+            assert source.startswith(b"RIFF")
+            assert sample_rate == 8000 and num_channels == 1
+
+        def get_all_samples(self):
+            return types.SimpleNamespace(
+                sample_rate = 8000, data = np.zeros((1, 80), dtype = "float32")
+            )
+
+    monkeypatch.setattr(module, "AudioDecoder", WorkingDecoder, raising = False)
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", True)
     monkeypatch.setattr(audio_decode, "_installed", False)
     before = Audio.decode_example
     assert audio_decode.ensure_audio_decoding() is True
     assert Audio.decode_example is before
+
+
+@pytest.mark.parametrize("failure_stage", ["construct", "decode", "resample"])
+def test_lazy_native_codec_failure_enables_real_soundfile_decoding(
+    monkeypatch, broken_torchcodec, failure_stage
+):
+    import sys
+    import types
+
+    from datasets import Audio, Dataset, config
+
+    class LazyDecoder:
+        def __init__(self, source, **kwargs):
+            if failure_stage == "construct":
+                raise RuntimeError("Missing FFmpeg shared libraries")
+
+        def get_all_samples(self):
+            if failure_stage == "decode":
+                raise OSError("Native audio decoder could not load")
+            return types.SimpleNamespace(
+                sample_rate = 16000, data = np.zeros((1, 160), dtype = "float32")
+            )
+
+    module = types.ModuleType("datasets.features._torchcodec")
+    module.AudioDecoder = LazyDecoder
+    monkeypatch.setitem(sys.modules, "datasets.features._torchcodec", module)
+    monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", True)
+    assert audio_decode.ensure_audio_decoding() is True
+    assert config.TORCHCODEC_AVAILABLE is False
+    ds = Dataset.from_dict({"audio": [{"path": "a.wav", "bytes": _wav_bytes()}]})
+    ds = ds.cast_column("audio", Audio(sampling_rate = 24000))
+    decoded = ds[0]["audio"]
+    assert decoded["sampling_rate"] == 24000
+    assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
 
 
 def test_a_stereo_source_keeps_its_frames(broken_torchcodec):

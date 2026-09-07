@@ -28,6 +28,23 @@ AudioTools 0.7.4 is newer than the 0.7.2 package on PyPI but still requires prot
 
 The protobuf 4 native abi3 wheel raises a CPython 3.14 metaclass error. The pure wheel's exact URL and SHA-256 are mandatory; setting a Python-implementation environment variable alone does not prevent the selector's native-extension probe. See the [artifact matrix](dependency-matrix.md) rather than substituting another wheel with the same version.
 
+## Native FFmpeg is a separate prerequisite
+
+TorchCodec's Windows native decoder needs an FFmpeg **full-shared** installation.
+A static `ffmpeg.exe` on `PATH` is not enough: the shared DLLs must be discoverable
+by the selected environment. The Windows rollout uses checksum-verified Gyan
+FFmpeg Shared **9.0.1**, retained app-scoped with its licenses and libraries, rather
+than changing another application's runtime or the global search path.
+
+TorchCodec 0.16 loads native libraries lazily. Importing `AudioDecoder` therefore
+does not prove that audio works. Studio's readiness guard decodes and resamples a
+tiny in-memory WAV before accepting the native backend. If that fails, the
+existing soundfile/librosa compatibility decoder is installed with an explicit
+log message; if neither path is usable, the guard reports failure.
+
+Verify actual `datasets.Audio` decoding and requested-rate resampling in addition
+to DAC or TensorBoard checks. These exercise different native dependencies.
+
 ## What has been exercised
 
 The Windows migration exercised real DAC encode/decode and checkpoint paths, plus TensorBoard event write/read in tiny-model training. That is evidence for those paths, not all speech architectures, all quantization modes, or macOS/Linux runtime certification.

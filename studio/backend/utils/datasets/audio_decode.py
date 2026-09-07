@@ -3,7 +3,7 @@
 
 """Decode `datasets` Audio columns with soundfile when torchcodec cannot load.
 
-`datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared
+`datasets` 4+ decodes audio through torchcodec, which needs an FFmpeg full-shared
 install to dlopen its native libraries. Windows has none by default, so
 `disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every
 audio column raises, blocking the dataset format check and all six audio trainer paths
@@ -138,49 +138,64 @@ def _encode_with_soundfile(self, value) -> dict:
     return _ORIGINAL_ENCODE(self, value)
 
 
+def _probe_torchcodec_audio() -> None:
+    import io
+    import wave
+
+    from datasets.features._torchcodec import AudioDecoder
+
+    # TorchCodec can import successfully before loading any native libraries.
+    source = io.BytesIO()
+    with wave.open(source, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 160)
+    samples = AudioDecoder(
+        source.getvalue(), sample_rate = 8000, num_channels = 1
+    ).get_all_samples()
+    if (
+        samples.sample_rate != 8000
+        or len(samples.data.shape) != 2
+        or samples.data.shape[0] != 1
+        or samples.data.shape[1] == 0
+    ):
+        raise RuntimeError("torchcodec failed its audio decode/resample probe")
+
+
 def ensure_audio_decoding() -> bool:
     """Install the soundfile decoder when torchcodec is unusable. Idempotent.
 
-    False means neither backend is importable, and the caller should report that rather
+    False means neither backend is usable, and the caller should report that rather
     than let a decode raise deep inside `datasets`.
     """
-    global _installed
+    global _installed, _ORIGINAL_ENCODE
     try:
         from datasets import config
         from datasets.features.audio import Audio
     except ImportError:
         return False
-    # `datasets` < 4 (pyproject still allows >=3.4.1) decodes through soundfile itself and
-    # defines no TORCHCODEC_AVAILABLE, so the read below raised AttributeError at the
-    # unguarded call site. Nothing to install there, so say so.
+    # Older datasets versions decode through soundfile and have no codec flag.
     if not hasattr(config, "TORCHCODEC_AVAILABLE"):
         return True
-    if config.TORCHCODEC_AVAILABLE and not _installed:
-        try:
-            # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes
-            # that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag
-            # here.
-            from datasets.features._torchcodec import AudioDecoder  # noqa: F401
-        except (ImportError, OSError, RuntimeError) as exc:
-            logger.info("torchcodec is installed but unusable (%s)", exc)
-            config.TORCHCODEC_AVAILABLE = False
-    if config.TORCHCODEC_AVAILABLE:
-        return True
-    if _installed:
-        return True
-    try:
-        # librosa too: every trainer path casts to a target rate, so a decoder that cannot
-        # resample would raise from inside `datasets` exactly where this returns False.
-        import librosa  # noqa: F401
-        import soundfile  # noqa: F401
-    except (ImportError, OSError) as exc:
-        logger.warning("No usable audio decoder: torchcodec is broken and %s", exc)
-        return False
-    global _ORIGINAL_ENCODE
     with _install_lock:
-        # Re-check under the lock: the loser of the race must not re-capture.
         if _installed:
             return True
+        if config.TORCHCODEC_AVAILABLE:
+            try:
+                _probe_torchcodec_audio()
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.info("torchcodec is installed but unusable (%s)", exc)
+                config.TORCHCODEC_AVAILABLE = False
+            else:
+                return True
+        try:
+            # Every trainer cast requests a target rate, so resampling must be available too.
+            import librosa  # noqa: F401
+            import soundfile  # noqa: F401
+        except (ImportError, OSError) as exc:
+            logger.warning("No usable audio decoder: torchcodec is broken and %s", exc)
+            return False
         _ORIGINAL_ENCODE = Audio.encode_example
         Audio.decode_example = _decode_with_soundfile
         Audio.encode_example = _encode_with_soundfile
