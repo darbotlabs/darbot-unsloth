@@ -152,6 +152,13 @@ pub(crate) fn updater_configured(app: &tauri::AppHandle) -> bool {
     valid_updater_config(app.config().plugins.0.get("updater"))
 }
 
+pub(crate) fn configured_updater<T>(
+    config: Option<&serde_json::Value>,
+    initialize: impl FnOnce() -> T,
+) -> Option<T> {
+    valid_updater_config(config).then(initialize)
+}
+
 fn valid_updater_config(config: Option<&serde_json::Value>) -> bool {
     let Some(config) = config else {
         return false;
@@ -401,6 +408,30 @@ fn split_alpha_numeric(value: &str) -> Option<(&str, u64)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disabled_updater_configuration_never_initializes_the_plugin() {
+        let shipped: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        for config in [
+            None,
+            Some(&serde_json::Value::Null),
+            Some(&serde_json::json!({})),
+            shipped.get("plugins").and_then(|plugins| plugins.get("updater")),
+        ] {
+            let plugin: Option<()> = super::configured_updater(config, || {
+                panic!("disabled updater must not initialize a plugin requiring configuration")
+            });
+            assert!(plugin.is_none());
+        }
+        assert_eq!(
+            super::configured_updater(Some(&serde_json::json!({
+                "pubkey": "test-only",
+                "endpoints": [super::DESKTOP_UPDATER_MANIFEST_URL]
+            })), || "configured-plugin"),
+            Some("configured-plugin")
+        );
+    }
+
     #[test]
     fn unsigned_or_upstream_update_configuration_is_disabled() {
         assert!(!super::valid_updater_config(None));

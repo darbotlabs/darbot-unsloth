@@ -685,6 +685,7 @@ mod tests {
     fn tauri_backend_update_skips_the_web_frontend_build() {
         use std::ffi::OsStr;
 
+        let _environment = crate::studio_paths::default_test_environment();
         let mut cmd = Command::new("unused");
         configure_tauri_update_environment(&mut cmd).unwrap();
 

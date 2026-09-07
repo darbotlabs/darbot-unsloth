@@ -33,6 +33,9 @@ pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
 pub(super) static TEST_RECORD_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> =
     std::sync::Mutex::new(None);
 
+#[cfg(test)]
+static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Where the server writes its records. Overridable in tests so the end to end
 /// case can be driven without touching the real studio home.
 fn record_root() -> Option<std::path::PathBuf> {
@@ -237,6 +240,7 @@ mod tests {
 
     #[test]
     fn explicit_environment_pid_records_follow_the_selected_data_root() {
+        let _root = ROOT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         crate::studio_paths::with_explicit_test_environment(|_, data| {
             assert_eq!(record_root().as_deref(), Some(data));
             std::fs::write(data.join(RECORDED_8888), "").unwrap();
@@ -504,9 +508,6 @@ mod system_tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::{Child, Command};
-
-    /// Serialises the record-root override, which is process-wide.
-    static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct RecordRoot {
         _guard: std::sync::MutexGuard<'static, ()>,

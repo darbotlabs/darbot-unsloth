@@ -326,27 +326,44 @@ mod tests {
 }
 
 #[cfg(test)]
-pub(crate) fn with_explicit_test_environment(test: impl FnOnce(&Path, &Path)) {
-    let _lock = crate::native_path_policy::PROCESS_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    struct Restore(Vec<(&'static str, Option<OsString>)>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            for (name, value) in &self.0 {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
+pub(crate) struct TestEnvironment {
+    previous: Vec<(&'static str, Option<OsString>)>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for TestEnvironment {
+    fn drop(&mut self) {
+        for (name, value) in &self.previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
             }
         }
     }
-    let _restore = Restore(
-        ["UNSLOTH_ENV_DIR", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME"]
+}
+
+#[cfg(test)]
+pub(crate) fn default_test_environment() -> TestEnvironment {
+    let lock = crate::native_path_policy::PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let guard = TestEnvironment {
+        previous: ["UNSLOTH_ENV_DIR", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME"]
             .into_iter()
             .map(|name| (name, std::env::var_os(name)))
             .collect(),
-    );
+        _lock: lock,
+    };
+    for (name, _) in &guard.previous {
+        std::env::remove_var(name);
+    }
+    guard
+}
+
+#[cfg(test)]
+pub(crate) fn with_explicit_test_environment(test: impl FnOnce(&Path, &Path)) {
+    let _guard = default_test_environment();
     let scratch = tempfile::tempdir().unwrap();
     let environment = resolve_path(&scratch.path().join("external-python")).unwrap();
     let data = resolve_path(&scratch.path().join("custom-data")).unwrap();

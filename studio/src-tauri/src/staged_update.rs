@@ -629,7 +629,8 @@ fn live_tree_in_use(home: &Path) -> bool {
 mod tests {
     use super::*;
 
-    fn temp_home(name: &str) -> PathBuf {
+    fn temp_home(name: &str) -> (PathBuf, crate::studio_paths::TestEnvironment) {
+        let environment = crate::studio_paths::default_test_environment();
         let dir = std::env::temp_dir().join(format!(
             "unsloth-staged-update-{name}-{}-{}",
             std::process::id(),
@@ -639,7 +640,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        (dir, environment)
     }
 
     /// Three code paths drop a tree on a background thread, and Windows refuses to
@@ -693,7 +694,7 @@ mod tests {
 
     #[test]
     fn ready_stage_replaces_the_runtime_and_keeps_the_previous_one_pending() {
-        let home = temp_home("activate");
+        let (home, _environment) = temp_home("activate");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(Some("0.1.900-beta")));
 
@@ -710,7 +711,7 @@ mod tests {
 
     #[test]
     fn stage_built_for_a_newer_shell_waits() {
-        let home = temp_home("wait");
+        let (home, _environment) = temp_home("wait");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(Some("0.1.901-beta")));
 
@@ -723,7 +724,7 @@ mod tests {
 
     #[test]
     fn stage_built_for_an_older_shell_is_discarded() {
-        let home = temp_home("discard");
+        let (home, _environment) = temp_home("discard");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(Some("0.1.899-beta")));
 
@@ -736,7 +737,7 @@ mod tests {
 
     #[test]
     fn incomplete_stage_is_removed() {
-        let home = temp_home("partial");
+        let (home, _environment) = temp_home("partial");
         make_runtime(&home, "old");
         make_runtime(&home.join(STAGE_DIR), "half");
         assert_eq!(status(&home).state, "partial");
@@ -751,7 +752,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_stage_that_cannot_finalize_never_replaces_the_live_runtime() {
-        let home = temp_home("finalize-failure");
+        let (home, _environment) = temp_home("finalize-failure");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(Some("0.1.900-beta")));
         let python = home
@@ -771,7 +772,7 @@ mod tests {
 
     #[test]
     fn unconfirmed_activation_rolls_back_and_records_the_failure() {
-        let home = temp_home("rollback");
+        let (home, _environment) = temp_home("rollback");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         reconcile_at_launch(&home, "0.1.900-beta");
@@ -790,7 +791,7 @@ mod tests {
 
     #[test]
     fn failed_activation_rolls_back_once_without_waiting_for_an_app_relaunch() {
-        let home = temp_home("same-launch-rollback");
+        let (home, _environment) = temp_home("same-launch-rollback");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         activate_ready(&home, "0.1.900-beta").unwrap();
@@ -806,7 +807,7 @@ mod tests {
 
     #[test]
     fn failed_activation_waits_until_the_live_runtime_is_unused() {
-        let home = temp_home("same-launch-live");
+        let (home, _environment) = temp_home("same-launch-live");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         activate_ready(&home, "0.1.900-beta").unwrap();
@@ -827,7 +828,7 @@ mod tests {
 
     #[test]
     fn confirmation_drops_the_previous_runtime_and_the_next_launch_keeps_the_new_one() {
-        let home = temp_home("confirm");
+        let (home, _environment) = temp_home("confirm");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         reconcile_at_launch(&home, "0.1.900-beta");
@@ -848,7 +849,7 @@ mod tests {
 
     #[test]
     fn an_older_backend_cannot_confirm_a_newer_activation() {
-        let home = temp_home("confirm-version");
+        let (home, _environment) = temp_home("confirm-version");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         activate_ready(&home, "0.1.900-beta").unwrap();
@@ -869,7 +870,7 @@ mod tests {
     #[test]
     fn every_interrupted_activation_boundary_restores_the_old_runtime() {
         for completed_renames in 0..=RUNTIME_ENTRIES.len() * 2 {
-            let home = temp_home(&format!("crash-{completed_renames}"));
+            let (home, _environment) = temp_home(&format!("crash-{completed_renames}"));
             make_runtime(&home, "old");
             stage_ready(&home, &versions(None));
             let stage = home.join(STAGE_DIR);
@@ -907,7 +908,7 @@ mod tests {
 
     #[test]
     fn repeating_an_interrupted_rollback_keeps_the_restored_runtime() {
-        let home = temp_home("rollback-retry");
+        let (home, _environment) = temp_home("rollback-retry");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         let stage = home.join(STAGE_DIR);
@@ -938,7 +939,7 @@ mod tests {
 
     #[test]
     fn an_interrupted_rollback_marker_recreates_the_failed_version() {
-        let home = temp_home("rollback-marker-recovery");
+        let (home, _environment) = temp_home("rollback-marker-recovery");
         make_runtime(&home, "old");
         let stage = home.join(STAGE_DIR);
         make_runtime(&stage, "bad");
@@ -957,7 +958,7 @@ mod tests {
 
     #[test]
     fn a_durable_confirmation_never_rolls_back_the_new_runtime() {
-        let home = temp_home("confirmed-crash");
+        let (home, _environment) = temp_home("confirmed-crash");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         activate_ready(&home, "0.1.900-beta").unwrap();
@@ -973,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_failed_swap_restores_every_entry_it_moved() {
-        let home = temp_home("swap-fail");
+        let (home, _environment) = temp_home("swap-fail");
         make_runtime(&home, "old");
         let stage = home.join(STAGE_DIR);
         make_runtime(&stage, "new");
@@ -995,7 +996,7 @@ mod tests {
 
     #[test]
     fn swapping_back_restores_the_runtime_the_activation_replaced() {
-        let home = temp_home("swap-back");
+        let (home, _environment) = temp_home("swap-back");
         make_runtime(&home, "old");
         let stage = home.join(STAGE_DIR);
         make_runtime(&stage, "new");
@@ -1017,7 +1018,7 @@ mod tests {
 
     #[test]
     fn rollback_takes_back_sidecars_the_failed_update_added() {
-        let home = temp_home("rollback-extra");
+        let (home, _environment) = temp_home("rollback-extra");
         // A legacy install: the managed venv is there, the tiered sidecars are not.
         fs::create_dir_all(home.join("unsloth_studio")).unwrap();
         fs::write(home.join("unsloth_studio").join("tag"), "old").unwrap();
@@ -1041,7 +1042,7 @@ mod tests {
 
     #[test]
     fn native_helpers_activate_and_roll_back_with_the_python_runtime() {
-        let container = temp_home("helpers");
+        let (container, _environment) = temp_home("helpers");
         let home = container.join("studio");
         fs::create_dir_all(&home).unwrap();
         make_runtime(&home, "old");
@@ -1070,7 +1071,7 @@ mod tests {
 
     #[test]
     fn undoing_an_activation_takes_the_staged_only_sidecars_back() {
-        let home = temp_home("undo-extra");
+        let (home, _environment) = temp_home("undo-extra");
         // A legacy install: the managed venv, and no tiered sidecars to swap back.
         fs::create_dir_all(home.join("unsloth_studio")).unwrap();
         fs::write(home.join("unsloth_studio").join("tag"), "old").unwrap();
@@ -1096,7 +1097,7 @@ mod tests {
 
     #[test]
     fn a_runtime_still_in_use_defers_instead_of_confirming() {
-        let home = temp_home("defer");
+        let (home, _environment) = temp_home("defer");
         make_runtime(&home, "old");
         stage_ready(&home, &versions(None));
         reconcile_at_launch(&home, "0.1.900-beta");
@@ -1121,7 +1122,7 @@ mod tests {
 
     #[test]
     fn stale_rollback_trash_is_removed_at_launch() {
-        let home = temp_home("trash");
+        let (home, _environment) = temp_home("trash");
         make_runtime(&home, "old");
         let trash = home.join(format!("{ROLLBACK_TRASH_PREFIX}1"));
         fs::create_dir_all(trash.join("unsloth_studio")).unwrap();
@@ -1153,7 +1154,7 @@ mod tests {
 
     #[test]
     fn a_startup_marker_counts_as_a_live_tree_record() {
-        let home = temp_home("markers");
+        let (home, _environment) = temp_home("markers");
         let me = std::process::id();
         // What a backend has while it is still binding, and what it keeps after
         // dropping its pid records until shutdown finishes.
@@ -1169,7 +1170,7 @@ mod tests {
 
     #[test]
     fn a_bare_record_cannot_resurrect_a_pid_the_timed_one_rejected() {
-        let home = temp_home("reused");
+        let (home, _environment) = temp_home("reused");
         let Some(me) = live_pid_or_skip(&home) else {
             return;
         };
@@ -1188,7 +1189,7 @@ mod tests {
 
     #[test]
     fn a_bare_record_with_no_timed_evidence_still_counts() {
-        let home = temp_home("bare");
+        let (home, _environment) = temp_home("bare");
         let me = std::process::id();
         // A pre-upgrade backend, or one whose per-port write failed.
         fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
@@ -1199,7 +1200,7 @@ mod tests {
 
     #[test]
     fn a_stage_that_never_reached_the_pinned_backend_is_rejected() {
-        let home = temp_home("version-gate");
+        let (home, _environment) = temp_home("version-gate");
         stage_ready(
             &home,
             &StagedVersions {
@@ -1221,7 +1222,7 @@ mod tests {
 
     #[test]
     fn status_reports_a_ready_stage() {
-        let home = temp_home("status");
+        let (home, _environment) = temp_home("status");
         stage_ready(&home, &versions(Some("0.1.900-beta")));
         assert_eq!(
             status(&home),

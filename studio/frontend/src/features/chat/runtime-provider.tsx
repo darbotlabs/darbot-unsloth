@@ -1235,7 +1235,7 @@ export async function ensureThreadRecord({
 function createStudioDbAdapter(
   modelType: ModelType,
   pairId?: string,
-  projectId?: string | null,
+  getProjectId: () => string | null | undefined = () => undefined,
   listThreads = true,
 ): RemoteThreadListAdapter {
   return {
@@ -1257,6 +1257,7 @@ function createStudioDbAdapter(
       if (!listThreads) {
         return { threads: [] };
       }
+      const projectId = getProjectId();
       let threads: ThreadRecord[];
       try {
         threads = await listStoredChatThreads({
@@ -1285,6 +1286,7 @@ function createStudioDbAdapter(
       // assistant-ui withholds the first message until this resolves, so the row write is tracked,
       // not awaited. Captured here, not inside the creator: these describe what the SEND was made
       // under, and all four move in between, since materialization is no longer the send's tick.
+      const projectId = getProjectId();
       const claim = readThreadCreationClaim(threadId);
       const runtimeStateAtInit = useChatRuntimeStore.getState();
       const incognitoAtInit = claim ? claim.incognito : runtimeStateAtInit.incognito;
@@ -1412,7 +1414,7 @@ function createStudioDbAdapter(
               void createStudioDbAdapter(
                 modelType,
                 pairId,
-                projectId,
+                getProjectId,
               ).generateTitle(remoteId, messages);
             }, 600);
             return streamTitle(thread.title || defaultTitle);
@@ -3302,9 +3304,18 @@ export function ChatRuntimeProvider({
       ),
     [initialThreadId, modelType, onInitialHistoryReady, pairId],
   );
+  // Adapter identity is a data-source boundary: replacing it invalidates active
+  // thread initialization and history loads in assistant-ui. Project navigation
+  // only changes the next chat's scope, not the data source of existing runs.
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+  const threadListAdapter = useMemo(
+    () => createStudioDbAdapter(modelType, pairId, () => projectIdRef.current, listThreads),
+    [modelType, pairId, listThreads],
+  );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
+    adapter: threadListAdapter,
   });
   const signalFailedInitialSwitchReady = useCallback(() => {
     if (onInitialHistoryReady) {

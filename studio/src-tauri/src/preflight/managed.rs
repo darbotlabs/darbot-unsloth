@@ -703,7 +703,7 @@ pub async fn managed_install_ready() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::version::MIN_DESKTOP_BACKEND_VERSION;
+    use super::super::version::expected_backend_version;
     use super::*;
 
     fn healthy_capability() -> DesktopCapability {
@@ -716,7 +716,7 @@ mod tests {
             desktop_auth_stale_reason: None,
             studio_install_ok: Some(true),
             studio_install_reason: None,
-            version: Some(MIN_DESKTOP_BACKEND_VERSION.to_string()),
+            version: Some(expected_backend_version().to_string()),
         }
     }
 

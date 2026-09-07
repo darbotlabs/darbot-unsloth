@@ -1743,7 +1743,27 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 // is the call Tauri's PathResolver makes for LocalData/<bid>, and it falls back to the
 // passwd database and the Windows known folder where a raw env read cannot.
 fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    if let Some(root) = windows_webview_profile_override(std::env::var_os("WEBVIEW2_USER_DATA_FOLDER")) {
+        return Some(root);
+    }
     dirs::data_local_dir().map(|d| d.join(bundle_id))
+}
+
+#[cfg(windows)]
+fn windows_webview_profile_override(value: Option<OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn explicit_webview_profile_keeps_cache_maintenance_out_of_default_user_data() {
+    let qa = PathBuf::from(r"C:\synthetic-qa\webview-profile");
+    assert_eq!(windows_webview_profile_override(Some(qa.clone().into_os_string())), Some(qa));
+    assert_eq!(windows_webview_profile_override(None), None);
+    assert_eq!(windows_webview_profile_override(Some(OsString::new())), None);
+    assert_eq!(windows_webview_profile_override(Some(OsString::from("relative"))), None);
 }
 
 // Clear WebView caches after an update: the in-app update runs setup.sh/setup.ps1 while
@@ -1917,7 +1937,7 @@ fn main() {
 
     let context = tauri::generate_context!();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -1930,8 +1950,15 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
+    let builder = match desktop_update_policy::configured_updater(
+        context.config().plugins.0.get("updater"),
+        || tauri_plugin_updater::Builder::new().build(),
+    ) {
+        Some(plugin) => builder.plugin(plugin),
+        None => builder,
+    };
+    builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()
@@ -2086,7 +2113,10 @@ fn main() {
             }
         })
         .build(context)
-        .expect("error while building tauri application")
+        .unwrap_or_else(|error| {
+            log::error!("Failed to build desktop application: {error}");
+            std::process::exit(1);
+        })
         .run(|app, event| match event {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {

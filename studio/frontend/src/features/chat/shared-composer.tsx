@@ -2815,6 +2815,7 @@ export function SharedComposer({
               size="icon"
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
+              aria-label="Stop generating"
             >
               <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>

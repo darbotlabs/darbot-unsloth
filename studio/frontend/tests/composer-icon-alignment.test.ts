@@ -40,3 +40,10 @@ test("every isolated composer stop square uses the optical centering class", () 
     /svg\.aui-composer-cancel-icon[\s\S]*?transform: translateX\(-0\.5px\)/,
   );
 });
+
+test("the shared composer exposes an accessible generation stop control", () => {
+  assert.match(
+    componentSources[2]!,
+    /busy \? \(\s*<Button[\s\S]*?onClick=\{stop\}\s+aria-label="Stop generating"/,
+  );
+});

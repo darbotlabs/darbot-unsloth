@@ -82,6 +82,28 @@ test("the shared provider is never keyed", () => {
   );
 });
 
+test("ordinary rerenders preserve the remote thread adapter identity", () => {
+  assert.match(
+    provider,
+    /const threadListAdapter = useMemo\(\s*\(\) => createStudioDbAdapter\(modelType, pairId, \(\) => projectIdRef\.current, listThreads\),\s*\[modelType, pairId, listThreads\],\s*\);/,
+  );
+  assert.match(
+    provider,
+    /useRemoteThreadListRuntime\(\{\s*runtimeHook,\s*adapter: threadListAdapter,\s*\}\)/,
+  );
+});
+
+test("project navigation updates creation scope without replacing active runtimes", () => {
+  assert.match(
+    provider,
+    /const projectIdRef = useRef\(projectId\);\s*projectIdRef\.current = projectId;/,
+  );
+  assert.match(
+    provider,
+    /initialize\(threadId: string\) \{[\s\S]*?const projectId = getProjectId\(\);[\s\S]*?const projectIdAtInit = claim \? claim\.projectId : projectId;/,
+  );
+});
+
 test("compare hides the shared provider instead of unmounting it", () => {
   // Rendering CompareContent in the provider's place unmounts it: the same detach()/cancel
   // path as #8908, reachable now that a run survives the navigation before a compare open.
