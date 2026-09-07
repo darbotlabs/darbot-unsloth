@@ -39,6 +39,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# This is licensed vendored provenance, not a generated setuptools manifest.
+!studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/_vendored/fla/MANIFEST
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

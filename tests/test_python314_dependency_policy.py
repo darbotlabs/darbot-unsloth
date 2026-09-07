@@ -154,3 +154,9 @@ def test_zoo_companion_is_data_not_a_nested_importable_package():
 def test_zoo_companion_keeps_upstream_bytes_under_git():
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "studio/backend/vendor/unsloth_zoo_compat/** -text -whitespace" in attributes
+
+
+def test_fla_provenance_manifest_is_retained_in_source_checkouts():
+    manifest = "studio/backend/vendor/unsloth_zoo_compat/unsloth_zoo/_vendored/fla/MANIFEST"
+    assert (ROOT / manifest).is_file()
+    assert f"!{manifest}" in (ROOT / ".gitignore").read_text(encoding="utf-8")

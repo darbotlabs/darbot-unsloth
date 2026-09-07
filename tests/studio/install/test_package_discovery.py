@@ -147,6 +147,7 @@ def test_built_wheel_ships_installable_zoo_companion_source():
         f"{companion}/LICENSE",
         f"{companion}/COPYING",
         f"{companion}/unsloth_zoo/__init__.py",
+        f"{companion}/unsloth_zoo/_vendored/fla/MANIFEST",
     }
     assert required <= names, f"wheel is missing Zoo bootstrap sources: {required - names}"
     generated = [
