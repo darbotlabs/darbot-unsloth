@@ -5201,7 +5201,8 @@ def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path
     assert opened == [], "a refused id must never reach the file manager"
 
 
-def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_a_sandbox_file_named_reveal_is_still_served(tmp_path, method):
     """The POST route shares the path the download route matches with
     ``{filename:path}``. Being POST-only keeps a file called ``reveal``
     reachable, which widening the method list later would silently undo."""
@@ -5209,7 +5210,7 @@ def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
 
     scope = {
         "type": "http",
-        "method": "GET",
+        "method": method,
         "path": "/sandbox/thread-1/reveal",
         "headers": [],
         "root_path": "",

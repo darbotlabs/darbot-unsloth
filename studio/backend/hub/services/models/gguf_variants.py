@@ -63,6 +63,7 @@ from hub.utils.gguf_plan import (
     plan_from_expected_files,
 )
 from utils.paths.path_utils import is_appledouble_metadata
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -1035,6 +1036,7 @@ async def get_gguf_variants_answer(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    offline = offline or hf_env_offline()
     # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
     # the copy from the request alone.
     answered_from: list[Optional[str]] = [None]

@@ -24554,7 +24554,8 @@ async def reveal_sandbox_dir(
     return {"status": "ok", "path": sandbox_dir}
 
 
-@router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
+@router.get("/sandbox/{session_id}/{filename:path}")
+@router.head("/sandbox/{session_id}/{filename:path}")
 async def serve_sandbox_file(
     session_id: str,
     filename: str,

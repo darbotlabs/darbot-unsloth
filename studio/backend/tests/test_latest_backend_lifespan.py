@@ -91,6 +91,13 @@ async def smoke():
             assert warm["stages"]["inference_backend"]["ok"], warm
         schema = main.app.openapi()
         assert "/api/health" in schema["paths"]
+        operation_ids = [
+            operation["operationId"]
+            for path in schema["paths"].values()
+            for method, operation in path.items()
+            if method in {"get", "head", "post", "put", "patch", "delete", "options", "trace"}
+        ]
+        assert len(operation_ids) == len(set(operation_ids)), "Duplicate OpenAPI operation IDs"
         transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 12345))
         async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
             health = await client.get("/api/health")
