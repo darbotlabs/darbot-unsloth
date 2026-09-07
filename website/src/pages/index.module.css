@@ -1,0 +1,43 @@
+.hero {
+  padding: 5.5rem 0 2.5rem;
+  background: radial-gradient(ellipse at 88% 20%, var(--site-glow), transparent 54%), var(--site-panel);
+  border-bottom: 1px solid var(--site-border);
+}
+.eyebrow {font-size: .78rem; font-weight: 750; letter-spacing: .14em; color: var(--ifm-color-primary); margin-bottom: 1rem;}
+.hero h1 {font-size: clamp(2.65rem, 5.5vw, 4.9rem); letter-spacing: -.055em; line-height: 1.08; max-width: 1000px;}
+.hero h1 span {color: var(--ifm-color-primary);}
+.lead {font-size: 1.22rem; max-width: 690px; color: var(--ifm-color-content-secondary); margin: 1.8rem 0;}
+.actions {display: flex; gap: 1rem; flex-wrap: wrap;}
+.facts {display: flex; flex-wrap: wrap; gap: 1.4rem 3rem; border-top: 1px solid var(--site-border); margin-top: 3.5rem; padding-top: 1.8rem; font-size: .86rem; color: var(--ifm-color-content-secondary);}
+.facts strong {display: block; font-size: 1.04rem; color: var(--ifm-font-color-base);}
+.release {display: flex; align-items: center; justify-content: space-between; gap: 2rem; padding-top: 2.8rem; padding-bottom: 2.8rem; border-bottom: 1px solid var(--site-border);}
+.release h2 {font-size: 1.3rem; margin: .8rem 0 .4rem;}
+.release p {margin: 0; max-width: 700px; color: var(--ifm-color-content-secondary);}
+.release a {flex-shrink: 0;}
+.section {padding-top: 4.3rem; padding-bottom: 4.3rem;}
+.sectionHeading {display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: 1.6rem;}
+.sectionHeading p {max-width: 330px; color: var(--ifm-color-content-secondary);}
+.grid {display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;}
+.card {padding: 1.8rem; background: var(--site-panel); border: 1px solid var(--site-border); border-radius: 12px; color: var(--ifm-font-color-base); transition: border-color .15s, box-shadow .15s;}
+.card:hover {color: var(--ifm-font-color-base); text-decoration: none; border-color: var(--ifm-color-primary); box-shadow: 0 6px 24px #0000000c;}
+.number {font-family: var(--ifm-font-family-monospace); color: var(--ifm-color-primary); font-size: .85rem;}
+.card h3 {font-size: 1.15rem; margin: 1rem 0 .8rem;}
+.card h3 span {float: right; color: var(--ifm-color-primary);}
+.card p {font-size: .94rem; color: var(--ifm-color-content-secondary); margin: 0;}
+.scope {display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; padding-top: 2.8rem; padding-bottom: 2.8rem; border-top: 1px solid var(--site-border); border-bottom: 1px solid var(--site-border);}
+.scope h2 {max-width: 480px; font-size: 1.8rem;}
+.attribution {padding-top: 3.5rem; padding-bottom: 4rem; max-width: 850px; text-align: center;}
+.attribution h2 {font-size: 1.5rem;}
+.attribution p {color: var(--ifm-color-content-secondary);}
+@media (max-width: 996px) {
+  .grid {grid-template-columns: repeat(2, 1fr);}
+  .release, .sectionHeading {align-items: start; flex-direction: column;}
+  .sectionHeading p {max-width: none;}
+}
+@media (max-width: 600px) {
+  .hero {padding-top: 3rem;}
+  .grid, .scope {grid-template-columns: 1fr;}
+  .scope {gap: 1rem;}
+  .card {padding: 1.4rem;}
+  .section {padding-top: 3rem;}
+}

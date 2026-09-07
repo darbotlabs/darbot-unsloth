@@ -24,6 +24,8 @@ Unsloth is the first desktop app to run and train models.
 
 ## ⚡ Get started
 
+**Darbot fork wiki & release status:** [darbotlabs.github.io/darbot-unsloth](https://darbotlabs.github.io/darbot-unsloth/) — source installation, compatibility, Studio, training, and downloads.
+
 ### This fork's platform policy
 
 This is **[darbotlabs/darbot-unsloth](https://github.com/darbotlabs/darbot-unsloth)**,

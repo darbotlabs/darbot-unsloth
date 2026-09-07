@@ -1,0 +1,16 @@
+{
+  "status": "preparing",
+  "tag": "v0.2.0",
+  "desktopVersion": "0.2.0",
+  "pythonVersion": "2026.9.3",
+  "publishedAt": null,
+  "desktopSigned": false,
+  "summary": "Windows desktop and Python packages are being qualified for publication. A local build is not a published or production-qualified release.",
+  "assets": [
+    {"name": "Unsloth_0.2.0_x64-setup.exe", "label": "Windows x64 installer", "description": "NSIS installer; unsigned. Review the release notes and checksum before installation."},
+    {"name": "unsloth-studio.exe", "label": "Windows desktop executable", "description": "Desktop shell executable, not a self-contained Python or model bundle."},
+    {"name": "unsloth-2026.9.3-py3-none-any.whl", "label": "Python wheel", "description": "Stamped fork package. The matching Zoo companion and backend profile still matter."},
+    {"name": "unsloth-2026.9.3.tar.gz", "label": "Python source distribution", "description": "Source package for the same Python release; not the desktop version scheme."},
+    {"name": "SHA256SUMS.txt", "label": "SHA-256 checksums", "description": "Verify downloaded files against the published checksums."}
+  ]
+}
